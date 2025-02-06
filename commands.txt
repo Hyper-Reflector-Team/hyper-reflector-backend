@@ -28,3 +28,6 @@ pm2 start <filename>
 
 -- security considerations
 we should enable ufw to firewall all bad ports and connections
+
+-- adding ssh for users ?
+https://dev.to/koddr/quick-how-to-clone-your-private-repository-from-github-to-server-droplet-vds-etc-39jm

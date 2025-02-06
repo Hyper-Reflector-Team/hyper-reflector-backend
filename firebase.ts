@@ -10,21 +10,15 @@ const db = getFirestore();
 
 const docRef = db.collection('users').doc('alovelace');
 
-await docRef.set({
-    first: 'Ada',
-    last: 'Lovelace',
-    born: 1815
-});
 
-// export { }
+// Write new user to db
+async function test() {
+    console.log(docRef)
+    await docRef.set({
+        first: 'Ada',
+        last: 'Lovelace',
+        born: 1815
+    });
+}
 
-// try {
-//     const docRef = await addDoc(collection(db, "users"), {
-//       first: "Ada",
-//       last: "Lovelace",
-//       born: 1815
-//     });
-//     console.log("Document written with ID: ", docRef.id);
-//   } catch (e) {
-//     console.error("Error adding document: ", e);
-//   }
+test()
