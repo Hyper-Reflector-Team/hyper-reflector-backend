@@ -12,10 +12,10 @@ const docRef = db.collection('users').doc('alovelace');
 
 
 // Write new user to db
-async function test() {
+async function test(name: string) {
     console.log(docRef)
     await docRef.set({
-        first: 'Ada',
+        first: name,
         last: 'Lovelace',
         born: 1815
     });
