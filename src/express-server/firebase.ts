@@ -12,7 +12,7 @@ const docRef = db.collection('users').doc('alovelace');
 
 
 // Write new user to db
-async function test(name: string) {
+async function testCommand(name: string) {
     console.log(docRef)
     await docRef.set({
         first: name,
@@ -21,4 +21,6 @@ async function test(name: string) {
     });
 }
 
-test()
+module.exports = {
+    testCommand
+}

@@ -1,11 +1,10 @@
 const express = require('express')
 const app = express()
-const port = 3478
-const firebaseCommands = require('../firebase')
+const port = 8080
 
 app.get('/test', (req, res) => {
     res.send('Hello World!')
-    firebaseCommands.test('weeeeeee')
+    testCommand('weeeeeee')
     console.log('hey we got a reques', JSON.stringify(req))
 })
 
