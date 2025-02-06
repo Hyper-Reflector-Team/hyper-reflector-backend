@@ -1,6 +1,6 @@
 const express = require('express')
 const app = express()
-const port = 8080
+const port = 3478
 const firebaseCommands = require('../firebase')
 
 app.get('/test', (req, res) => {
