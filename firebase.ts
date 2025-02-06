@@ -1,7 +1,7 @@
 const { initializeApp, applicationDefault, cert } = require('firebase-admin/app');
-const { getFirestore, Timestamp, FieldValue, Filter } = import('firebase-admin/firestore');
+const { getFirestore, Timestamp, FieldValue, Filter } = require('firebase-admin/firestore');
 
-const serviceAccount = import('./keys/service_account_key.json');
+const serviceAccount = require('./keys/service_account_key.json');
 initializeApp({
     credential: cert(serviceAccount)
 });
