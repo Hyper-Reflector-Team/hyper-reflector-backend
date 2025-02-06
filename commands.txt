@@ -19,7 +19,12 @@ for some reason I cannot get git to work on any of the other users, likely an ss
 I use root to do all of the installing stuff from git / pulling in the different user directories such as /home/runner is where im storing the BE now
 
 
--- pm2 stuff
+-- pm2 stuff == more info here https://www.youtube.com/watch?v=SSLhGanxmCg&ab_channel=HaykSimonyan
 using pm2 as a process manager on runner
+we have to install pm2 and bun globally 
 
 pm2 start <filename>
+
+
+-- security considerations
+we should enable ufw to firewall all bad ports and connections
