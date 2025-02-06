@@ -8,9 +8,9 @@ usermod -aG sudo <name>  -- this adds a user to the sudo group
 coturn stuff
 https://www.youtube.com/watch?v=eZ9Jrxy6NVM&t=1561s&ab_channel=AwesomeOpenSource -- tutorial i used to set everything up
 
--- the coturn server should be always running on the main droplet
-sudo systemctl restart coturn
-sudo systemctl coturn status -- check status
+-- the coturn server should be always running on the main droplet this seems to be needed to be run on root only
+systemctl restart coturn
+systemctl status coturn -- check status
 
 
 notes:
