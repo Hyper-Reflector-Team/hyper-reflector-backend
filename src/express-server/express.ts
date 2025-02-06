@@ -30,7 +30,8 @@ async function testCommand(name) {
 app.get('/test', (req, res) => {
     res.send('Hello World!')
     testCommand('weeeeeee')
-    console.log('hey we got a reques', JSON.stringify(req))
+    console.log('hey we got a request')
+    console.log(req)
 })
 
 app.listen(port, () => {
