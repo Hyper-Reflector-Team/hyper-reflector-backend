@@ -1,3 +1,5 @@
+// This is the signalling server used by coturn and the front end application to handle handshaking / making inital RTC call
+
 const WebSocket = require("ws");
 
 const wss = new WebSocket.Server({ port: 3000 });

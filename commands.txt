@@ -1,0 +1,25 @@
+This is just a simple list of commands i use on the server making note so I don't forget stuff.
+
+-- adding a new user
+adduser <name>
+usermod -aG sudo <name>  -- this adds a user to the sudo group 
+
+
+coturn stuff
+https://www.youtube.com/watch?v=eZ9Jrxy6NVM&t=1561s&ab_channel=AwesomeOpenSource -- tutorial i used to set everything up
+
+-- the coturn server should be always running on the main droplet
+sudo systemctl restart coturn
+sudo systemctl coturn status -- check status
+
+
+notes:
+we should only run the backend services ie signal server from a user like (runner)
+for some reason I cannot get git to work on any of the other users, likely an ssh issue or something going on with the droplet? 
+I use root to do all of the installing stuff from git / pulling in the different user directories such as /home/runner is where im storing the BE now
+
+
+-- pm2 stuff
+using pm2 as a process manager on runner
+
+pm2 start <filename>
