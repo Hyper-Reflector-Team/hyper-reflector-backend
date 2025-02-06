@@ -1,5 +1,6 @@
 {
   "name": "hyper-reflector-backend",
+  "type": "module",
   "version": "0.0.1",
   "description": "backend stuff for hyper-reflector",
   "main": "index.js",
@@ -9,7 +10,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "firebase": "^11.2.0",
-    "firebase-admin": "^13.0.2"
+    "firebase-admin": "^13.0.2",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "electron": "34.0.2",
+    "eslint": "^8.57.1",
+    "eslint-plugin-import": "^2.31.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~4.5.4"
   }
 }
