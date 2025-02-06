@@ -9,17 +9,6 @@ initializeApp({
     credential: cert(serviceAccount)
 });
 
-app.get('/test', (req, res) => {
-    res.send('Hello World!')
-    fbCommands.testCommand('weeeeeee')
-    console.log('hey we got a reques', JSON.stringify(req))
-})
-
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-})
-
-
 // firebase related commands 
 const db = getFirestore();
 const docRef = db.collection('users').doc('alovelace');
@@ -33,3 +22,17 @@ async function testCommand(name) {
         born: 1815
     });
 }
+
+
+
+
+// SERVER
+app.get('/test', (req, res) => {
+    res.send('Hello World!')
+    testCommand('weeeeeee')
+    console.log('hey we got a reques', JSON.stringify(req))
+})
+
+app.listen(port, () => {
+    console.log(`Example app listening on port ${port}`)
+})
