@@ -28,6 +28,19 @@ app.use(express.json()) // for parsing application/json
 
 
 // SERVER
+//expects a user token from firebase auth to verify
+app.post('/validate-token', (req, res) => {
+    // if user cannot be verified kick them out of the request
+    getAuth().verifyIdToken(req.body.idToken).then((decodedToken) => {
+        const uid = decodedToken.uid;
+        console.log('successful request by: ', uid)
+        res.send('ok')
+    }).catch(err => {
+        console.log('user touched api without being logged in', err)
+        res.send('no-ok')
+    })
+})
+
 app.post('/test', (req, res) => {
     // if user cannot be verified kick them out of the request
     getAuth().verifyIdToken(req.body.idToken).then((decodedToken) => {
