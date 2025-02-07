@@ -29,16 +29,15 @@ app.use(express.json()) // for parsing application/json
 
 // SERVER
 app.post('/test', (req, res) => {
-    console.log(req.body)
-    getAuth().verifyIdToken(req.body.idToken).then(() => {
-        console.log('found user')
+    // if user cannot be verified kick them out of the request
+    getAuth().verifyIdToken(req.body.idToken).then((decodedToken) => {
+        const uid = decodedToken.uid;
+        console.log('successful request by: ', uid)
+        res.send('Hello World!')
+        testCommand('weeeeeee')
     }).catch(err => {
         console.log('user touched api without being logged in', err)
     })
-    res.send('Hello World!')
-    testCommand('weeeeeee')
-    console.log('hey we got a request')
-    // console.log(req)
 })
 
 app.listen(port, () => {
