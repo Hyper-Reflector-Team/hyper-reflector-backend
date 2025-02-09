@@ -4,11 +4,23 @@ const WebSocket = require("ws");
 
 const wss = new WebSocket.Server({ port: 3000 });
 
+const connectedUsers = new Map();
+
 wss.on("connection", (ws) => {
     console.log("New client connected");
-
+    let user
     ws.on("message", (message) => {
         console.log("Received:", message);
+
+        const data = JSON.parse(message);
+        if (data.type === "join") {
+            user = data.user // set the users info on connect
+            connectedUsers.set(user, ws);
+            ws.send(JSON.stringify({
+                type: "connected-users",
+                users: Array.from(connectedUsers.keys())
+            }));
+        }
 
         // Broadcast message to all clients except sender
         wss.clients.forEach((client) => {
@@ -18,7 +30,10 @@ wss.on("connection", (ws) => {
         });
     });
 
-    ws.on("close", () => console.log("Client disconnected"));
+    ws.on("close", () => {
+        console.log('user disconnected')
+        connectedUsers.delete(user);
+    });
 });
 
 console.log("WebSocket signaling server running on port 3000...");
