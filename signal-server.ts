@@ -31,7 +31,7 @@ wss.on("connection", (ws) => {
     });
 
     ws.on("close", () => {
-        console.log('user disconnected')
+        console.log('user disconnected', user.email)
         connectedUsers.delete(user);
     });
 });
