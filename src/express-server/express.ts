@@ -33,20 +33,20 @@ async function testCommand(name) {
 
 const logInUserRef = db.collection('logged-in')
 async function addLoggedInUser(userEmail, token) {
-    console.log(userEmail, token)
     await logInUserRef.doc(userEmail).set({
         token,
     })
 }
 
 async function fetchLoggedInUser(userEmail) {
-    const doc = await logInUserRef.doc(userEmail).get()
-    if (doc.exists) {
-        console.log('we got doc from backend', doc.data())
-        return doc.data()
+    if (userEmail && userEmail.length) {
+        const doc = await logInUserRef.doc(userEmail).get()
+        if (doc.exists) {
+            return true
+        }
+        return false
     }
-    console.log('failed to find')
-    return 'failure'
+    return 'something something'
 }
 
 async function removeLoggedInUser(userEmail) {
@@ -62,7 +62,6 @@ async function createAccount({ name, email }, token) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (querySnapshot.empty) {
         // create a new user
-        console.log('setting user')
         await usersRef.doc(email).set({
             userEmail: email,
             userName: name,
@@ -77,7 +76,6 @@ async function createAccount({ name, email }, token) {
 async function changeUserName(name, token) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
-        console.log('setting user name')
         await usersRef.doc(querySnapshot).set({
             userName: name,
         })
@@ -102,32 +100,15 @@ app.use(express.json()) // for parsing application/json
 //expects a user token from firebase auth to verify
 app.post('/validate-token', (req, res) => {
     // if user cannot be verified kick them out of the request
-
     getAuth()
         .verifyIdToken(req.body.idToken)
         .then((decodedToken) => {
             const uid = decodedToken.uid
-            console.log('successful request by: ', uid)
             res.send('ok')
         })
         .catch((err) => {
             console.log('user touched api without being logged in', err)
             res.send('no-ok')
-        })
-})
-
-app.post('/test', (req, res) => {
-    // if user cannot be verified kick them out of the request
-    getAuth()
-        .verifyIdToken(req.body.idToken)
-        .then((decodedToken) => {
-            const uid = decodedToken.uid
-            console.log('successful request by: ', uid)
-            res.send('Hello World!')
-            testCommand('weeeeeee')
-        })
-        .catch((err) => {
-            console.log('user touched api without being logged in', err)
         })
 })
 
@@ -147,10 +128,11 @@ app.post('/logged-in', (req, res) => {
         })
 })
 
-app.post('/get-logged-in', (req, res) => {
+app.post('/get-logged-in', async (req, res) => {
     try {
-        const data = fetchLoggedInUser(req.body.userEmail)
-        return res.json({ message: data })
+        const isLoggedIn = await fetchLoggedInUser(req.body.userEmail)
+        console.log('User found:', isLoggedIn)
+        res.json({ loggedIn: isLoggedIn === true }) // Ensure it's boolean
     } catch (error) {
         console.log('user not logged in')
         res.status(500).json({ error: 'server error' })
@@ -190,7 +172,6 @@ app.post('/create-account', (req, res) => {
     getAuth()
         .verifyIdToken(req.body.idToken)
         .then((decodedToken) => {
-            console.log('trying to create an account')
             const uid = decodedToken.uid
             // add user to logged in users collection
             createAccount(req.body, uid)
@@ -206,7 +187,6 @@ app.post('/get-user-auth', async (req, res) => {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
         const uid = decodedToken.uid
         const data = await getUserAccountByAuth(uid)
-        console.log(data)
         return res.json(data)
     } catch (err) {
         console.log('user touched api without being logged in', err)
