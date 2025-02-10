@@ -9,7 +9,7 @@ const connectedUsers = new Map()
 wss.on('connection', (ws) => {
     console.log('New client connected')
     let user
-    
+
     ws.on('message', (message) => {
         console.log('Received:', message)
 
@@ -40,7 +40,7 @@ wss.on('connection', (ws) => {
 
     ws.on('close', () => {
         console.log('user disconnected', user.email)
-        connectedUsers.delete(user)
+        connectedUsers.delete(user.uid)
     })
 })
 
