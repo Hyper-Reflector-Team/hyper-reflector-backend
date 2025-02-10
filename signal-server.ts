@@ -15,7 +15,11 @@ wss.on('connection', (ws) => {
         const data = JSON.parse(message)
         if (data.type === 'join') {
             user = data.user // set the users info on connect
-            connectedUsers.set(user, ws)
+            if (!connectedUsers.has({ uid: user.uid })) {
+                connectedUsers.set(user, ws)
+            } else {
+                console.log('already exists')
+            }
             ws.send(
                 JSON.stringify({
                     type: 'connected-users',
