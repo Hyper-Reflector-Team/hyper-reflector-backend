@@ -9,21 +9,23 @@ const connectedUsers = new Map()
 wss.on('connection', (ws) => {
     console.log('New client connected')
     let user
+    
     ws.on('message', (message) => {
         console.log('Received:', message)
 
         const data = JSON.parse(message)
         if (data.type === 'join') {
             user = data.user // set the users info on connect
-            if (!connectedUsers.has({ uid: user.uid })) {
-                connectedUsers.set(user, ws)
+            if (!connectedUsers.has(user.uid)) {
+                connectedUsers.set(user.uid, { ...user, ws })
             } else {
-                console.log('already exists')
+                console.log('User already exists')
             }
+
             ws.send(
                 JSON.stringify({
                     type: 'connected-users',
-                    users: [...new Set(connectedUsers.keys())],
+                    users: [...connectedUsers.values()].map(({ ws, ...user }) => user),
                 })
             )
         }
