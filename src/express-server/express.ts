@@ -150,7 +150,7 @@ app.post('/logged-in', (req, res) => {
 app.post('/get-logged-in', (req, res) => {
     try {
         console.log('request')
-        const data = fetchLoggedInUser(req.body.userEmail)
+        const data = fetchLoggedInUser(req.body.uid)
         return res.json({ message: data })
     } catch (error) {
         console.log('user not logged in')
