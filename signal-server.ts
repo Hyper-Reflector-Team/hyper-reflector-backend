@@ -1,39 +1,41 @@
 // This is the signalling server used by coturn and the front end application to handle handshaking / making inital RTC call
 
-const WebSocket = require("ws");
+const WebSocket = require('ws')
 
-const wss = new WebSocket.Server({ port: 3000 });
+const wss = new WebSocket.Server({ port: 3000 })
 
-const connectedUsers = new Map();
+const connectedUsers = new Map()
 
-wss.on("connection", (ws) => {
-    console.log("New client connected");
+wss.on('connection', (ws) => {
+    console.log('New client connected')
     let user
-    ws.on("message", (message) => {
-        console.log("Received:", message);
+    ws.on('message', (message) => {
+        console.log('Received:', message)
 
-        const data = JSON.parse(message);
-        if (data.type === "join") {
+        const data = JSON.parse(message)
+        if (data.type === 'join') {
             user = data.user // set the users info on connect
-            connectedUsers.set(user, ws);
-            ws.send(JSON.stringify({
-                type: "connected-users",
-                users: Array.from(connectedUsers.keys())
-            }));
+            connectedUsers.set(user, ws)
+            ws.send(
+                JSON.stringify({
+                    type: 'connected-users',
+                    users: Array.from(connectedUsers.keys()),
+                })
+            )
         }
 
         // Broadcast message to all clients except sender
         wss.clients.forEach((client) => {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
-                client.send(message);
+                client.send(message)
             }
-        });
-    });
+        })
+    })
 
-    ws.on("close", () => {
+    ws.on('close', () => {
         console.log('user disconnected', user.email)
-        connectedUsers.delete(user);
-    });
-});
+        connectedUsers.delete(user)
+    })
+})
 
-console.log("WebSocket signaling server running on port 3000...");
+console.log('WebSocket signaling server running on port 3000...')
