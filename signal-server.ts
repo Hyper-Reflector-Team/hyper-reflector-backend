@@ -23,7 +23,7 @@ wss.on('connection', (ws) => {
             ws.send(
                 JSON.stringify({
                     type: 'connected-users',
-                    users: Array.from(connectedUsers.keys()).filter(u => u.uid === user.uid),
+                    users: Array.from(connectedUsers.keys()).filter(u => u.uid !== user.uid),
                 })
             )
         }
