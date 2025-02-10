@@ -23,7 +23,7 @@ wss.on('connection', (ws) => {
             ws.send(
                 JSON.stringify({
                     type: 'connected-users',
-                    users: Array.from(new Set(connectedUsers.keys())),
+                    users: [...new Set(connectedUsers.keys())],
                 })
             )
         }
