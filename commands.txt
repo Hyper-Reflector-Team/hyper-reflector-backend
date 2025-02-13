@@ -12,6 +12,9 @@ https://www.youtube.com/watch?v=eZ9Jrxy6NVM&t=1561s&ab_channel=AwesomeOpenSource
 systemctl restart coturn
 systemctl status coturn -- check status
 
+to modify the configs for the turn server
+nano /etc/turnserver.conf 
+
 
 notes:
 we should only run the backend services ie signal server from a user like (runner)
