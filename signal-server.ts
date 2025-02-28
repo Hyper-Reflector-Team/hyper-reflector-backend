@@ -7,15 +7,15 @@ const wss = new WebSocket.Server({ port: 3000 })
 const connectedUsers = new Map()
 
 wss.on('connection', (ws) => {
-    console.log('New client connected')
+
     let user
 
     ws.on('message', (message) => {
-        console.log('Received:', message)
-
         const data = JSON.parse(message)
+
         if (data.type === 'join') {
             user = data.user // set the users info on connect
+            console.log('user connected - ', user.email)
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
             } else {
@@ -30,18 +30,56 @@ wss.on('connection', (ws) => {
             )
         }
 
-        // Broadcast message to all clients except sender
-        wss.clients.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-                client.send(message)
+        // handle user making call
+        if (data.type === 'callUser') {
+            console.log('socket recieved request to call')
+            const { callerId, calleeId, offer } = data
+            if (connectedUsers.has(calleeId)) {
+                // get the user we are calling from the user list
+                const callee = connectedUsers.get(calleeId)
+                callee.ws.send(JSON.stringify({ type: 'incomingCall', callerId, offer }))
+            } else {
+                ws.send(JSON.stringify({ type: 'error', message: 'user not online' }))
             }
-        })
+        }
+
+        // handle user answer call
+        if (data.type === 'answerCall') {
+            console.log('socket call request was answered')
+            const { callerId, answer } = data
+            if (connectedUsers.has(callerId)) {
+                // if caller exists we get them by id from user list
+                const caller = connectedUsers.get(callerId)
+                caller.ws.send(JSON.stringify({ type: 'callAnswered', answer }))
+            }
+        }
+
+        // handle ice candidate exchanging
+        if (data.type === 'iceCandidate') {
+            const { targetId, candidate } = data
+            if (connectedUsers.has(targetId)) {
+                const targetUser = connectedUsers.get(targetId)
+                targetUser.ws.send(JSON.stringify({ type: 'iceCandidate', candidate }))
+            }
+        }
     })
 
+    //handle close socket
     ws.on('close', () => {
         console.log('user disconnected', user.email)
         connectedUsers.delete(user.uid)
+        broadcastUserList()
     })
 })
+
+function broadcastUserList() {
+    const userList = [...connectedUsers.values()].map(({ ws, ...user }) => user)
+    // Broadcast message to all clients except sender
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'connected-users', users: userList }))
+        }
+    })
+}
 
 console.log('WebSocket signaling server running on port 3000...')
