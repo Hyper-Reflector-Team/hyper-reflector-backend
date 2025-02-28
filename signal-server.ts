@@ -54,7 +54,7 @@ wss.on('connection', (ws) => {
             if (connectedUsers.has(callerId)) {
                 // if caller exists we get them by id from user list
                 const caller = connectedUsers.get(callerId)
-                caller.ws.send(JSON.stringify({ type: 'callAnswered', answer }))
+                caller.ws.send(JSON.stringify({ type: 'callAnswered', data: {callerId, answer} }))
             }
         }
 
