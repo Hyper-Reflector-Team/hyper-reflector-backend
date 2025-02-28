@@ -7,7 +7,6 @@ const wss = new WebSocket.Server({ port: 3000 })
 const connectedUsers = new Map()
 
 wss.on('connection', (ws) => {
-
     let user
 
     ws.on('message', (message) => {
@@ -41,7 +40,9 @@ wss.on('connection', (ws) => {
             if (connectedUsers.has(calleeId)) {
                 // get the user we are calling from the user list
                 const callee = connectedUsers.get(calleeId)
-                callee.ws.send(JSON.stringify({ type: 'incomingCall', callerId, offer: localDescription })) // local description is the offer
+                callee.ws.send(
+                    JSON.stringify({ type: 'incomingCall', callerId, offer: localDescription })
+                ) // local description is the offer
             } else {
                 ws.send(JSON.stringify({ type: 'error', message: 'user not online' }))
             }
@@ -50,11 +51,13 @@ wss.on('connection', (ws) => {
         // handle user answer call
         if (data.type === 'answerCall') {
             console.log('socket call request was answered')
-            const { callerId, answer } = data.data
+            const { callerId, answer, answererId } = data.data
             if (connectedUsers.has(callerId)) {
                 // if caller exists we get them by id from user list
                 const caller = connectedUsers.get(callerId)
-                caller.ws.send(JSON.stringify({ type: 'callAnswered', data: {callerId, answer} }))
+                caller.ws.send(
+                    JSON.stringify({ type: 'callAnswered', data: { callerId, answer, answererId } })
+                )
             }
         }
 
