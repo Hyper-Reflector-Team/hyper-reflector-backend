@@ -60,8 +60,7 @@ wss.on('connection', (ws) => {
 
         // handle ice candidate exchanging
         if (data.type === 'iceCandidate') {
-            console.log('we got an ice candidate', data)
-            const { targetId, candidate } = data
+            const { targetId, candidate } = data.data
             console.log('we got an ice candidate', targetId, candidate)
             if (connectedUsers.has(targetId)) {
                 const targetUser = connectedUsers.get(targetId)
