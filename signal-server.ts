@@ -31,6 +31,15 @@ wss.on('connection', (ws) => {
             )
         }
 
+        if (data.type === 'join') {
+            ws.send(
+                JSON.stringify({
+                    type: 'userDisconnect',
+                    userUID: user.uid,
+                })
+            )
+        }
+
         // handle user making call
         if (data.type === 'callUser') {
             const { callerId, calleeId, localDescription } = data.data
