@@ -1,4 +1,5 @@
 // This is the signalling server used by coturn and the front end application to handle handshaking / making inital RTC call
+// This has also been coopted to handle all websocket related stuff on the front end.
 
 const WebSocket = require('ws')
 
@@ -31,13 +32,8 @@ wss.on('connection', (ws) => {
             )
         }
 
-        if (data.type === 'join') {
-            ws.send(
-                JSON.stringify({
-                    type: 'userDisconnect',
-                    userUID: user.uid,
-                })
-            )
+        if (data.type === 'userDisconnect') {
+            broadcastKillPeer(user.uid)
         }
 
         // handle user making call
@@ -86,8 +82,22 @@ wss.on('connection', (ws) => {
         console.log('user disconnected', user.email)
         connectedUsers.delete(user.uid)
         broadcastUserList()
+        // we should automagically log the user out here if anything abruptly happens.
     })
 })
+
+function broadcastKillPeer(userUID: string) {
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(
+                JSON.stringify({
+                    type: 'userDisconnect',
+                    userUID: userUID,
+                })
+            )
+        }
+    })
+}
 
 function broadcastUserList() {
     const userList = [...connectedUsers.values()].map(({ ws, ...user }) => user)
