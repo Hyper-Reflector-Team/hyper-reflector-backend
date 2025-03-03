@@ -87,15 +87,18 @@ wss.on('connection', (ws) => {
             idToken: user.uid || 'not real',
             userEmail: user.email,
         })
-        await axios.post(
-            `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/log-out-internal`,
-            body,
-            {
+        // if we already had a healthy websocket connection, we can try to log out if the websocket randomly closes.
+        axios
+            .post(`http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/log-out-internal`, body, {
                 'Content-Type': 'application/json',
-            }
-        )
+            })
+            .then(() => {
+                console.log('User logout request completed.')
+            })
+            .catch((error) => {
+                console.error('Error logging out user:', error.message)
+            })
         broadcastUserList()
-
         // we should automagically log the user out here if anything abruptly happens.
     })
 })

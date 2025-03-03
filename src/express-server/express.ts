@@ -84,6 +84,10 @@ async function changeUserName(name, token) {
     }
 }
 
+// add known alias
+// add profile picture uploading
+// add recent matches
+
 async function getUserAccountByAuth(token) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
