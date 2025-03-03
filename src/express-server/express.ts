@@ -152,6 +152,12 @@ app.post('/log-out', (req, res) => {
         })
 })
 
+// insecure? - need to test more
+app.post('/log-out', (req, res) => {
+    // if user cannot be verified kick them out of the request
+    removeLoggedInUser(req.body.userEmail)
+})
+
 //profile api
 app.post('/change-name', (req, res) => {
     // if user cannot be verified kick them out of the request

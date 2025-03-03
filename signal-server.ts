@@ -2,6 +2,8 @@
 // This has also been coopted to handle all websocket related stuff on the front end.
 
 const WebSocket = require('ws')
+const axios = require('axios')
+const serverInfo = require('./keys/server.ts')
 
 const wss = new WebSocket.Server({ port: 3000 })
 
@@ -33,7 +35,6 @@ wss.on('connection', (ws) => {
         }
 
         if (data.type === 'userDisconnect') {
-            console.log(user.uid, 'trying to disconnect')
             broadcastKillPeer(user.uid)
         }
 
@@ -79,10 +80,22 @@ wss.on('connection', (ws) => {
     })
 
     //handle close socket
-    ws.on('close', () => {
+    ws.on('close', async () => {
         console.log('user disconnected', user.email)
         connectedUsers.delete(user.uid)
+        const body = JSON.stringify({
+            idToken: user.uid || 'not real',
+            userEmail: user.email,
+        })
+        await axios.post(
+            `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/log-out-internal`,
+            body,
+            {
+                'Content-Type': 'application/json',
+            }
+        )
         broadcastUserList()
+
         // we should automagically log the user out here if anything abruptly happens.
     })
 })
