@@ -153,7 +153,7 @@ app.post('/log-out', (req, res) => {
 })
 
 // insecure? - need to test more
-app.post('/log-out', (req, res) => {
+app.post('/log-out-internal', (req, res) => {
     // if user cannot be verified kick them out of the request
     removeLoggedInUser(req.body.userEmail)
 })
