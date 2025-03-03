@@ -33,6 +33,7 @@ wss.on('connection', (ws) => {
         }
 
         if (data.type === 'userDisconnect') {
+            console.log(user.uid, 'trying to disconnect')
             broadcastKillPeer(user.uid)
         }
 
@@ -86,9 +87,10 @@ wss.on('connection', (ws) => {
     })
 })
 
-function broadcastKillPeer(userUID: string) {
+function broadcastKillPeer(userUID) {
     wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
+            console.log('sending signal for disconnect to other user')
             client.send(
                 JSON.stringify({
                     type: 'userDisconnect',
