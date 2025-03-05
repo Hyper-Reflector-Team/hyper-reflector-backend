@@ -38,6 +38,10 @@ wss.on('connection', (ws) => {
             broadcastKillPeer(user.uid)
         }
 
+        if (data.type === 'sendMessage') {
+            broadCastUserMessage(data)
+        }
+
         // handle user making call
         if (data.type === 'callUser') {
             const { callerId, calleeId, localDescription } = data.data
@@ -124,6 +128,23 @@ function broadcastUserList() {
         if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({ type: 'connected-users', users: userList }))
         }
+    })
+}
+
+function broadCastUserMessage(messageData) {
+    console.log(messageData)
+    const userList = [...connectedUsers.values()].map(({ ws, ...user }) => user)
+    // Broadcast message to all clients except sender
+    wss.clients.forEach((client) => {
+        console.log(userList)
+        console.log('sending to clients')
+        client.send(
+            JSON.stringify({
+                type: 'sendRoomMessage',
+                message: messageData.message,
+                sender: messageData.sender,
+            })
+        )
     })
 }
 
