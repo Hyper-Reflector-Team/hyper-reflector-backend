@@ -141,7 +141,7 @@ function broadCastUserMessage(messageData) {
             console.log('sending to clients')
             client.send(
                 JSON.stringify({
-                    type: 'sendRoomMessage',
+                    type: 'getRoomMessage',
                     message: messageData.message,
                     sender: messageData.sender,
                 })
