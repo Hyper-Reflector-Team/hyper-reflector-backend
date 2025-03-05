@@ -136,15 +136,17 @@ function broadCastUserMessage(messageData) {
     const userList = [...connectedUsers.values()].map(({ ws, ...user }) => user)
     // Broadcast message to all clients except sender
     wss.clients.forEach((client) => {
-        console.log(userList)
-        console.log('sending to clients')
-        client.send(
-            JSON.stringify({
-                type: 'sendRoomMessage',
-                message: messageData.message,
-                sender: messageData.sender,
-            })
-        )
+        if (client.readyState === WebSocket.OPEN) {
+            console.log(userList)
+            console.log('sending to clients')
+            client.send(
+                JSON.stringify({
+                    type: 'sendRoomMessage',
+                    message: messageData.message,
+                    sender: messageData.sender,
+                })
+            )
+        }
     })
 }
 
