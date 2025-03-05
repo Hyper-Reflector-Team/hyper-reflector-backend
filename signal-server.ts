@@ -83,6 +83,11 @@ wss.on('connection', (ws) => {
                 )
             }
         }
+
+        // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
+        if (data.type === 'matchEnd') {
+            disconnectUserFromUsers(data.userUID)
+        }
     })
 
     //handle close socket
@@ -148,6 +153,14 @@ function broadCastUserMessage(messageData) {
                     sender: messageData.sender,
                 })
             )
+        }
+    })
+}
+
+function disconnectUserFromUsers(userUID) {
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'matchEndedClose', userUID }))
         }
     })
 }
