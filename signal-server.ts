@@ -88,6 +88,7 @@ wss.on('connection', (ws) => {
             const { opponentUID } = data
             console.log('send stun over socket: ', data)
             if (connectedUsers.has(opponentUID)) {
+                console.log('user found, sending data')
                 const targetUser = connectedUsers.get(opponentUID)
                 targetUser.ws.send(
                     JSON.stringify({ type: 'receiveHolePunchStun', data: data.data })
