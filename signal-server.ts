@@ -84,6 +84,17 @@ wss.on('connection', (ws) => {
             }
         }
 
+        if (data.type === 'sendStunOverSocket') {
+            const { opponentUID } = data
+            console.log('send stun over socket: ', data)
+            if (connectedUsers.has(opponentUID)) {
+                const targetUser = connectedUsers.get(opponentUID)
+                targetUser.ws.send(
+                    JSON.stringify({ type: 'receiveHolePunchStun', data: data.data })
+                )
+            }
+        }
+
         // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
         if (data.type === 'matchEnd') {
             disconnectUserFromUsers(data.userUID)
