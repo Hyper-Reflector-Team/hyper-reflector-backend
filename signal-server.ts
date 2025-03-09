@@ -87,6 +87,7 @@ wss.on('connection', (ws) => {
         if (data.type === 'sendStunOverSocket') {
             const { opponentUID } = data
             console.log('send stun over socket: ', data)
+            console.log(connectedUsers)
             if (connectedUsers.has(opponentUID)) {
                 console.log('user found, sending data')
                 const targetUser = connectedUsers.get(opponentUID)
