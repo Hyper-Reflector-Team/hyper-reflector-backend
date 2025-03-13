@@ -100,7 +100,9 @@ async function getUserAccountByAuth(token) {
 
 // get custom token for auto log in
 async function getCustomToken(idToken) {
-    return await getAuth().createCustomToken(idToken)
+    // console.log(idToken, ' requesting a new custom token')
+    const customToken = await getAuth().createCustomToken(idToken)
+    return customToken
 }
 
 app.use(express.json()) // for parsing application/json
@@ -217,14 +219,13 @@ app.post('/get-custom-token', async (req, res) => {
         const data = await getCustomToken(uid)
         return res.json(data)
     } catch (err) {
-        console.log('user touched api without being logged in', err)
         res.status(500).json({ err: 'server error' })
     }
 })
 
 // init listen
 app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
+    console.log(`firebase api on port ${port}`)
 })
 
 app.use(express.urlencoded({ extended: true })) // for parsing application/x-www-form-urlencoded
