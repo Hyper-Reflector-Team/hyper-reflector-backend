@@ -73,7 +73,7 @@ async function createAccount({ name, email }, token) {
     }
 }
 
-async function changeUserName(name, token) {
+async function changeUserName(name: string, token: string) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
         await usersRef.doc(querySnapshot).set({
@@ -88,7 +88,7 @@ async function changeUserName(name, token) {
 // add profile picture uploading
 // add recent matches
 
-async function getUserAccountByAuth(token) {
+async function getUserAccountByAuth(token: string) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
         console.log(querySnapshot.docs[0].data())
@@ -96,6 +96,12 @@ async function getUserAccountByAuth(token) {
     } else {
         return null
     }
+}
+
+// get custom token for auto log in
+async function getCustomToken(idToken: string) {
+    const decodedToken = await getAuth().verifyIdToken(idToken)
+    return await getAuth().createCustomToken(decodedToken.uid)
 }
 
 app.use(express.json()) // for parsing application/json
