@@ -100,8 +100,7 @@ async function getUserAccountByAuth(token: string) {
 
 // get custom token for auto log in
 async function getCustomToken(idToken: string) {
-    const decodedToken = await getAuth().verifyIdToken(idToken)
-    return await getAuth().createCustomToken(decodedToken.uid)
+    return await getAuth().createCustomToken(idToken)
 }
 
 app.use(express.json()) // for parsing application/json
@@ -203,6 +202,19 @@ app.post('/get-user-auth', async (req, res) => {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
         const uid = decodedToken.uid
         const data = await getUserAccountByAuth(uid)
+        return res.json(data)
+    } catch (err) {
+        console.log('user touched api without being logged in', err)
+        res.status(500).json({ err: 'server error' })
+    }
+})
+
+app.post('/get-custom-token', async (req, res) => {
+    try {
+        //get token
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const data = await getCustomToken(uid)
         return res.json(data)
     } catch (err) {
         console.log('user touched api without being logged in', err)
