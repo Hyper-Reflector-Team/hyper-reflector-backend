@@ -24,8 +24,9 @@ socket.on('message', function (message, remote) {
         }
 
         if (data.kill) {
-            console.log('removing user')
+            console.log(uid, ' - ended the match removing users from pool ', uid, ' & ', peerUid)
             delete users[uid] // Correct way to remove from an object
+            delete users[peerUid] // Correct way to remove from an object
             return
         }
 
