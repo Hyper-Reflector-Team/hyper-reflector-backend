@@ -15,6 +15,8 @@ const {
 } = require('firebase-admin/firestore')
 const serviceAccount = require('../../keys/service_account_key.json')
 
+const dataConverter = require('./data')
+
 initializeApp({
     credential: cert(serviceAccount),
 })
@@ -103,6 +105,62 @@ async function getCustomToken(idToken) {
     // console.log(idToken, ' requesting a new custom token')
     const customToken = await getAuth().createCustomToken(idToken)
     return customToken
+}
+
+// match related functions
+async function getUserName(uid) {
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+    if (!querySnapshot.empty) {
+        console.log('trying to get docs', querySnapshot.docs)
+        return querySnapshot.docs[0].data().userName
+    } else {
+        return null
+    }
+}
+
+async function uploadMatchData(matchData, uid) {
+    //generate a random id for the matchId
+    const matchIDRef = db.collection('recent-matches').doc()
+    const matchId = matchIDRef.id // Get the generated ID
+    // get the match ref
+    const matchRef = db.collection('recent-matches').doc(uid)
+    console.log(matchData)
+    const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
+    const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
+    const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
+    const matchObject = {
+        player1Name: matchData.player1 ? await getUserName(matchData.player1) : null,
+        player1: matchData.player1,
+        player1Char: p1Char,
+        player1Super: parsedMatchData['player1-super'],
+        player2Name: matchData.player2 ? await getUserName(matchData.player2) : null,
+        player2: matchData.player2,
+        player2Char: p2Char,
+        player2Super: parsedMatchData['player2-super'],
+        matchData: matchData.matchData,
+        results: parsedMatchData['p1-win'] ? '1' : '2',
+        matchId,
+    }
+    await matchRef.set(
+        {
+            recentMatches: FieldValue.arrayUnion(matchObject),
+        },
+        { merge: true }
+    )
+}
+
+async function getUserMatches(uid) {
+    if (uid && uid.length) {
+        const docRef = db.collection('recent-matches').doc(uid)
+        const docSnap = await docRef.get()
+
+        if (docSnap.exists) {
+            console.log(docSnap.data())
+            return docSnap.data()
+        }
+        return null
+    }
+    return null
 }
 
 app.use(express.json()) // for parsing application/json
@@ -220,6 +278,41 @@ app.post('/get-custom-token', async (req, res) => {
         return res.json(data)
     } catch (err) {
         res.status(500).json({ err: 'server error' })
+    }
+})
+
+// match related
+app.post('/upload-match', (req, res) => {
+    // if user cannot be verified kick them out of the request
+    getAuth()
+        .verifyIdToken(req.body.idToken)
+        .then((decodedToken) => {
+            const uid = decodedToken.uid
+            // add user to logged in users collection
+            const data = req.body
+            // console.log(req.body)
+            uploadMatchData(data, uid)
+        })
+        .catch((err) => {
+            console.log('user touched api without being logged in', err)
+        })
+})
+
+app.post('/get-user-matches', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const data = await getUserMatches(uid)
+
+        if (data) {
+            console.log('did we get data?', data)
+            return res.json(data)
+        } else {
+            return res.status(404).json({ error: 'No matches found' })
+        }
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
     }
 })
 
