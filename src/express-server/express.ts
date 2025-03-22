@@ -25,6 +25,9 @@ initializeApp({
 const db = getFirestore()
 
 const docRef = db.collection('users').doc('alovelace')
+
+const usersRef = db.collection('users')
+
 async function testCommand(name) {
     await docRef.set({
         first: name,
@@ -59,7 +62,6 @@ async function removeLoggedInUser(userEmail) {
     }
 }
 
-const usersRef = db.collection('users')
 async function createAccount({ name, email }, token) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (querySnapshot.empty) {
@@ -75,12 +77,24 @@ async function createAccount({ name, email }, token) {
     }
 }
 
-async function changeUserName(name, token) {
+async function updateUserData(data, token) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
         await usersRef.doc(querySnapshot).set({
-            userName: name,
+            userName: data.userName,
         })
+    } else {
+        return null
+    }
+}
+
+async function getUserData(uid) {
+    console.log(uid)
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+    if (!querySnapshot.empty) {
+        const doc = querySnapshot.docs[0]
+        const { userEmail, uid, ...filteredData } = doc.data() // exclude uid and email
+        return filteredData
     } else {
         return null
     }
@@ -119,48 +133,62 @@ async function getUserName(uid) {
 }
 
 async function uploadMatchData(matchData, uid) {
-    //generate a random id for the matchId
-    const matchIDRef = db.collection('recent-matches').doc()
-    const matchId = matchIDRef.id // Get the generated ID
-    // get the match ref
-    const matchRef = db.collection('recent-matches').doc(uid)
-    console.log(matchData)
+    if (!uid) return
+
+    const matchIDRef = db.collection('recent-matches').doc(uid).collection('matches').doc()
+    const matchId = matchIDRef.id
+
     const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
     const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
     const matchObject = {
         player1Name: matchData.player1 ? await getUserName(matchData.player1) : null,
-        player1: matchData.player1,
-        player1Char: p1Char,
-        player1Super: parsedMatchData['player1-super'],
+        player1: matchData.player1 || 'p1 unknown',
+        player1Char: p1Char || 'p1 char unknown',
+        player1Super: parsedMatchData['player1-super'] || 'p1 super unknown',
         player2Name: matchData.player2 ? await getUserName(matchData.player2) : null,
-        player2: matchData.player2,
-        player2Char: p2Char,
-        player2Super: parsedMatchData['player2-super'],
+        player2: matchData.player2 || 'p2 unknown',
+        player2Char: p2Char || 'p2 char unknown',
+        player2Super: parsedMatchData['player2-super'] || 'p2 super unknown',
         matchData: matchData.matchData,
         results: parsedMatchData['p1-win'] ? '1' : '2',
         matchId,
+        timestamp: FieldValue.serverTimestamp(),
     }
-    await matchRef.set(
-        {
-            recentMatches: FieldValue.arrayUnion(matchObject),
-        },
-        { merge: true }
-    )
+    await matchIDRef.set(matchObject)
 }
 
-async function getUserMatches(uid) {
-    if (uid && uid.length) {
-        const docRef = db.collection('recent-matches').doc(uid)
-        const docSnap = await docRef.get()
+async function getUserMatches(uid, limit = 10, lastMatchId = null) {
+    if (!uid) return null
 
-        if (docSnap.exists) {
-            console.log(docSnap.data())
-            return docSnap.data()
+    let query = db
+        .collection('recent-matches')
+        .doc(uid)
+        .collection('matches')
+        .orderBy('timestamp', 'desc') // Sort by newest first
+        .limit(limit)
+
+    // If there is a lastMatchId, fetch the corresponding document to use as the startAfter cursor
+    if (lastMatchId) {
+        const lastDoc = await db
+            .collection('recent-matches')
+            .doc(uid)
+            .collection('matches')
+            .doc(lastMatchId)
+            .get()
+
+        if (lastDoc.exists) {
+            query = query.startAfter(lastDoc)
         }
-        return null
     }
-    return null
+
+    const querySnapshot = await query.get()
+    const matches = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+
+    return {
+        matches,
+        lastVisible: querySnapshot.docs[querySnapshot.docs.length - 1] || null, // Cursor for next page
+    }
 }
 
 app.use(express.json()) // for parsing application/json
@@ -200,7 +228,6 @@ app.post('/logged-in', (req, res) => {
 app.post('/get-logged-in', async (req, res) => {
     try {
         const isLoggedIn = await fetchLoggedInUser(req.body.userEmail)
-        console.log('User found:', isLoggedIn)
         res.json({ loggedIn: isLoggedIn === true }) // Ensure it's boolean
     } catch (error) {
         console.log('user not logged in')
@@ -228,20 +255,41 @@ app.post('/log-out-internal', (req, res) => {
 })
 
 //profile api
-app.post('/change-name', (req, res) => {
+app.post('/update-user-data', (req, res) => {
     // if user cannot be verified kick them out of the request
     getAuth()
         .verifyIdToken(req.body.idToken)
         .then((decodedToken) => {
             const uid = decodedToken.uid
             // add user to logged in users collection
-            changeUserName(req.body.userName, uid)
+            updateUserData(req.body.userName, uid)
         })
         .catch((err) => {
             console.log('user touched api without being logged in', err)
         })
 })
 
+app.post('/get-user-data', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        if (!decodedToken) return
+
+        const data = await getUserData(req.body.userUID)
+
+        if (data) {
+            return res.json(data)
+        } else {
+            return res.status(404).json({ error: 'No user found' })
+        }
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+//
+
+// account setting
 app.post('/create-account', (req, res) => {
     // if user cannot be verified kick them out of the request
     getAuth()
@@ -290,7 +338,6 @@ app.post('/upload-match', (req, res) => {
             const uid = decodedToken.uid
             // add user to logged in users collection
             const data = req.body
-            // console.log(req.body)
             uploadMatchData(data, uid)
         })
         .catch((err) => {
@@ -302,11 +349,13 @@ app.post('/get-user-matches', async (req, res) => {
     try {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
         const uid = decodedToken.uid
-        const data = await getUserMatches(uid)
+        const { lastMatchId, userUID } = req.body // Get pagination cursor from client
 
-        if (data) {
-            console.log('did we get data?', data)
-            return res.json(data)
+        // Fetch matches with pagination
+        const { matches, lastVisible } = await getUserMatches(userUID, 10, lastMatchId)
+        console.log('matches', matches)
+        if (matches.length > 0) {
+            return res.json({ matches, lastVisible: lastVisible ? lastVisible.id : null })
         } else {
             return res.status(404).json({ error: 'No matches found' })
         }
