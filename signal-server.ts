@@ -72,6 +72,19 @@ wss.on('connection', (ws) => {
             }
         }
 
+        //handle decline a call
+        if (data.type === 'declineCall') {
+            console.log('socket call request was decline')
+            const { callerId, answererId } = data.data
+            if (connectedUsers.has(callerId)) {
+                // if caller exists we get them by id from user list
+                const caller = connectedUsers.get(callerId)
+                caller.ws.send(
+                    JSON.stringify({ type: 'callDeclined', data: { callerId, answererId } })
+                )
+            }
+        }
+
         // handle ice candidate exchanging
         if (data.type === 'iceCandidate') {
             const { targetId, candidate, callerId } = data.data
