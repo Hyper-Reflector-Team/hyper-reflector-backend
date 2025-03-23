@@ -20,7 +20,7 @@ wss.on('connection', (ws) => {
             console.log('user connected - ', user.email)
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
-                // send over user list to everyon.
+                // send over user list to everyone.
                 broadcastUserList()
             } else {
                 console.log('User already exists')
