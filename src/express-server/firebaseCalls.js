@@ -157,12 +157,6 @@ async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId 
 
     const querySnapshot = await query.get()
     const matches = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-    console.log(
-        'first item in matches: ',
-        matches[0].matchId,
-        ' last item id matches: ',
-        matches[9].matchId
-    )
     return {
         matches,
         lastVisible: querySnapshot.docs[querySnapshot.docs.length - 1] || null,
