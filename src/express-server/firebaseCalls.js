@@ -69,7 +69,7 @@ async function getUserData(uid) {
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
         const doc = querySnapshot.docs[0]
-        const { userEmail, uid, ...filteredData } = doc.data() // exclude uid and email
+        const { userEmail, ...filteredData } = doc.data() // exclude uid and email
         return filteredData
     } else {
         return null
