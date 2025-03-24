@@ -104,22 +104,22 @@ async function getUserName(uid) {
 
 async function uploadMatchData(matchData, uid) {
     if (!uid) return
-
+    // console.log('attempting to parse match data', matchData)
     const matchIDRef = db.collection('recent-matches').doc(uid).collection('matches').doc()
     const matchId = matchIDRef.id
-
     const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
+    // console.log('match data was parsed', parsedMatchData)
     const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
     const matchObject = {
         player1Name: matchData.player1 ? await getUserName(matchData.player1) : null,
         player1: matchData.player1 || 'p1 unknown',
         player1Char: p1Char || 'p1 char unknown',
-        player1Super: parsedMatchData['player1-super'] || 'p1 super unknown',
+        player1Super: parsedMatchData['player1-super'],
         player2Name: matchData.player2 ? await getUserName(matchData.player2) : null,
         player2: matchData.player2 || 'p2 unknown',
         player2Char: p2Char || 'p2 char unknown',
-        player2Super: parsedMatchData['player2-super'] || 'p2 super unknown',
+        player2Super: parsedMatchData['player2-super'],
         matchData: matchData.matchData,
         results: parsedMatchData['p1-win'] ? '1' : '2',
         matchId,
