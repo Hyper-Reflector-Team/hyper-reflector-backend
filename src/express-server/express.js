@@ -84,7 +84,7 @@ app.post('/update-user-data', (req, res) => {
         .then((decodedToken) => {
             const uid = decodedToken.uid
             // add user to logged in users collection
-            api.updateUserData(req.body.userName, uid)
+            api.updateUserData(req.body.userData, uid)
         })
         .catch((err) => {
             console.log('user touched api without being logged in', err)

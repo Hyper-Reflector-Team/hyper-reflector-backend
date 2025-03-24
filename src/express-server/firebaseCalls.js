@@ -48,11 +48,17 @@ async function createAccount({ name, email }, token) {
 }
 
 async function updateUserData(data, token) {
+    const allowedFields = ['userName', 'userTitle']
+    const validData = Object.keys(data)
+        .filter((key) => allowedFields.includes(key))
+        .reduce((obj, key) => ({ ...obj, [key]: data[key] }), {})
+
+    if (Object.keys(validData).length === 0) return null // Prevent empty/bogus updates
+
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
-        await usersRef.doc(querySnapshot).set({
-            userName: data.userName,
-        })
+        const userDoc = querySnapshot.docs[0].ref
+        await userDoc.set(validData, { merge: true })
     } else {
         return null
     }
