@@ -128,7 +128,7 @@ async function uploadMatchData(matchData, uid) {
     await matchIDRef.set(matchObject)
 }
 
-async function getUserMatches(uid, limit = 10, lastMatchId = null) {
+async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId = null) {
     if (!uid) return null
 
     const matchCollectionRef = db.collection('recent-matches').doc(uid).collection('matches')
@@ -138,18 +138,35 @@ async function getUserMatches(uid, limit = 10, lastMatchId = null) {
     let query = matchCollectionRef.orderBy('timestamp', 'desc').limit(limit)
 
     if (lastMatchId) {
+        console.log('getting match data from last id', lastMatchId)
         const lastDoc = await matchCollectionRef.doc(lastMatchId).get()
         if (lastDoc.exists) {
             query = query.startAfter(lastDoc)
         }
     }
+    if (firstMatchId) {
+        console.log('getting match data from first id', firstMatchId)
+        const firstDoc = await matchCollectionRef.doc(firstMatchId).get()
+        if (firstDoc.exists) {
+            query = matchCollectionRef
+                .orderBy('timestamp', 'desc')
+                .endBefore(firstDoc)
+                .limitToLast(limit) // Ensure correct ordering when going backward
+        }
+    }
 
     const querySnapshot = await query.get()
     const matches = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-
+    console.log(
+        'first item in matches: ',
+        matches[0].matchId,
+        ' last item id matches: ',
+        matches[9].matchId
+    )
     return {
         matches,
         lastVisible: querySnapshot.docs[querySnapshot.docs.length - 1] || null,
+        firstVisible: querySnapshot.docs[0] || null,
         totalMatches,
     }
 }

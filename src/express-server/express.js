@@ -169,19 +169,21 @@ app.post('/get-user-matches', async (req, res) => {
     try {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
         const uid = decodedToken.uid
-        const { lastMatchId, userUID } = req.body // Get pagination cursor from client
+        const { lastMatchId, userUID, firstMatchId } = req.body // Get pagination cursor from client
 
         // Fetch matches with pagination
-        const { matches, lastVisible, totalMatches } = await api.getUserMatches(
+        const { matches, lastVisible, totalMatches, firstVisible } = await api.getUserMatches(
             userUID,
             10,
-            lastMatchId
+            lastMatchId,
+            firstMatchId
         )
-        console.log('matches', matches)
+
         if (matches.length > 0) {
             return res.json({
                 matches,
                 lastVisible: lastVisible ? lastVisible.id : null,
+                firstVisible: firstVisible ? firstVisible.id : null,
                 totalMatches,
             })
         } else {
