@@ -1,5 +1,5 @@
 const { getAuth } = require('firebase-admin/auth')
-const { getFirestore, FieldValue } = require('firebase-admin/firestore')
+const { getFirestore, FieldValue, updateDoc } = require('firebase-admin/firestore')
 const dataConverter = require('./data')
 
 // firebase related commands
@@ -48,7 +48,7 @@ async function createAccount({ name, email }, token) {
 }
 
 async function updateUserData(data, token) {
-    const allowedFields = ['userName', 'userTitle']
+    const allowedFields = ['userName', 'userTitle', 'knownAliases']
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
         .reduce((obj, key) => ({ ...obj, [key]: data[key] }), {})
@@ -59,13 +59,17 @@ async function updateUserData(data, token) {
     if (!querySnapshot.empty) {
         const userDoc = querySnapshot.docs[0].ref
         await userDoc.set(validData, { merge: true })
+        if (validData.userName) {
+            await userDoc.update({
+                knownAliases: FieldValue.arrayUnion(validData.userName),
+            })
+        }
     } else {
         return null
     }
 }
 
 async function getUserData(uid) {
-    console.log(uid)
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
         const doc = querySnapshot.docs[0]
@@ -75,10 +79,6 @@ async function getUserData(uid) {
         return null
     }
 }
-
-// add known alias
-// add profile picture uploading
-// add recent matches
 
 async function getUserAccountByAuth(token) {
     const querySnapshot = await usersRef.where('uid', '==', token).get()
@@ -117,6 +117,8 @@ async function uploadMatchData(matchData, uid) {
     // console.log('match data was parsed', parsedMatchData)
     const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
+    const playerKey = parsedMatchData['p1-win'] ? 'p1' : 'p2'
+
     const matchObject = {
         player1Name: matchData.player1 ? await getUserName(matchData.player1) : null,
         player1: matchData.player1 || 'p1 unknown',
@@ -131,7 +133,39 @@ async function uploadMatchData(matchData, uid) {
         matchId,
         timestamp: FieldValue.serverTimestamp(),
     }
+
     await matchIDRef.set(matchObject)
+
+    // add to global number of matches
+    // const globalStatsRef = db.collection('global-stats').doc('global-match-stats')
+    // await globalStatsRef.set(
+    //     {
+    //         globalNumberOfMatches: FieldValue.increment(1),
+    //     },
+    //     { merge: true }
+    // )
+
+    // // update the global count for wins
+    // try {
+    //     await globalStatsRef.update({
+    //         [`globalWinCount.${playerKey}`]: FieldValue.increment(1),
+    //     })
+    //     console.log(`${playerKey} win count incremented`)
+    // } catch (error) {
+    //     console.error('Error updating win count:', error)
+    // }
+
+    // // update character stats
+    // try {
+    //     await globalStatsRef.update({
+    //         [`globalCharacterChoice.${charKey}`]: {
+    //             count: FieldValue.increment(1),
+    //         },
+    //     })
+    //     console.log(`${charKey} data updated`)
+    // } catch (error) {
+    //     console.error('Error updating global char stats:', error)
+    // }
 }
 
 async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId = null) {
