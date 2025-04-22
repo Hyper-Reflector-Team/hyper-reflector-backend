@@ -121,7 +121,7 @@ async function uploadMatchData(matchData, uid) {
 
     const matchEntry = {
         matchData: matchData.matchData,
-        timestamp: FieldValue.serverTimestamp(),
+        timestamp: Date.now(),
         player1Char: p1Char || 'unknown',
         player2Char: p2Char || 'unknown',
         result: matchResult,
