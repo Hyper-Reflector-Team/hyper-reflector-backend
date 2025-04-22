@@ -138,7 +138,7 @@ async function uploadMatchData(matchData, uid) {
             player1Name: await getUserName(matchData.player1),
             player2Name: await getUserName(matchData.player2),
             matches: [matchEntry],
-            timestamp: FieldValue.serverTimestamp(),
+            timestamp: Date.now(),
         }
 
         await sessionRef.set(session)
@@ -163,7 +163,7 @@ async function uploadMatchData(matchData, uid) {
             {
                 sessionId: matchData.matchId,
                 opponent: player === matchData.player1 ? matchData.player2 : matchData.player1,
-                timestamp: FieldValue.serverTimestamp(),
+                timestamp: Date.now(),
             },
             { merge: true }
         )
