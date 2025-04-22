@@ -109,17 +109,31 @@ async function getUserName(uid) {
 }
 
 async function uploadMatchData(matchData, uid) {
-    if (!uid) return
-    // console.log('attempting to parse match data', matchData)
-    const matchIDRef = db.collection('recent-matches').doc(uid).collection('matches').doc()
-    const matchId = matchIDRef.id
+    if (!uid || !matchData.matchId) return
+    const globalMatchRef = db.collection('global-matches').doc(matchData.matchId)
+
+    // check to see if the match has already been logged
+    const existingMatch = await globalMatchRef.get()
+    if (existingMatch.exists) {
+        console.log(`Match ${matchData.matchId} already exists. Skipping upload.`)
+        return
+    }
+
+    // const matchIDRef = db.collection('recent-matches').doc(uid).collection('matches').doc()
+    // const matchId = matchIDRef.id
+    // const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
+    // const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
+    // const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
+    // const playerKey = parsedMatchData['p1-win'] ? 'p1' : 'p2'
+
+    // parse the match data
     const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
-    // console.log('match data was parsed', parsedMatchData)
     const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
     const playerKey = parsedMatchData['p1-win'] ? 'p1' : 'p2'
 
     const matchObject = {
+        uniqueMatchId: matchData.matchId,
         player1Name: matchData.player1 ? await getUserName(matchData.player1) : null,
         player1: matchData.player1 || 'p1 unknown',
         player1Char: p1Char || 'p1 char unknown',
@@ -134,38 +148,46 @@ async function uploadMatchData(matchData, uid) {
         timestamp: FieldValue.serverTimestamp(),
     }
 
-    await matchIDRef.set(matchObject)
+    // Save globally
+    await globalMatchRef.set(matchObject)
 
-    // add to global number of matches
-    // const globalStatsRef = db.collection('global-stats').doc('global-match-stats')
-    // await globalStatsRef.set(
-    //     {
-    //         globalNumberOfMatches: FieldValue.increment(1),
-    //     },
-    //     { merge: true }
-    // )
+    // Save under both players' profiles
+    const batch = db.batch()
+    if (matchData.player1) {
+        const ref1 = db
+            .collection('recent-matches')
+            .doc(matchData.player1)
+            .collection('matches')
+            .doc(matchData.matchId)
+        batch.set(ref1, matchObject)
+    }
+    if (matchData.player2) {
+        const ref2 = db
+            .collection('recent-matches')
+            .doc(matchData.player2)
+            .collection('matches')
+            .doc(matchData.matchId)
+        batch.set(ref2, matchObject)
+    }
+    await batch.commit()
 
-    // // update the global count for wins
-    // try {
-    //     await globalStatsRef.update({
-    //         [`globalWinCount.${playerKey}`]: FieldValue.increment(1),
-    //     })
-    //     console.log(`${playerKey} win count incremented`)
-    // } catch (error) {
-    //     console.error('Error updating win count:', error)
-    // }
+    // Update global stats
+    const globalStatsRef = db.collection('global-stats').doc('global-match-stats')
+    try {
+        await globalStatsRef.set(
+            {
+                globalNumberOfMatches: FieldValue.increment(1),
+                [`globalWinCount.${playerKey}`]: FieldValue.increment(1),
+                [`globalCharacterChoice.${p1Char}`]: FieldValue.increment(1),
+                [`globalCharacterChoice.${p2Char}`]: FieldValue.increment(1),
+            },
+            { merge: true }
+        )
 
-    // // update character stats
-    // try {
-    //     await globalStatsRef.update({
-    //         [`globalCharacterChoice.${charKey}`]: {
-    //             count: FieldValue.increment(1),
-    //         },
-    //     })
-    //     console.log(`${charKey} data updated`)
-    // } catch (error) {
-    //     console.error('Error updating global char stats:', error)
-    // }
+        console.log(`Match ${matchData.matchId} successfully uploaded and stats updated.`)
+    } catch (error) {
+        console.error('Error updating global stats:', error)
+    }
 }
 
 async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId = null) {
