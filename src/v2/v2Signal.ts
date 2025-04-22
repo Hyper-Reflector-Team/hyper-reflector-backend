@@ -18,25 +18,6 @@ wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         const data = JSON.parse(message)
 
-        // if (data.type === 'join') {
-        //     user = data.user // set the users info on connect
-        //     console.log('user connected - ', user.email)
-        //     if (!connectedUsers.has(user.uid)) {
-        //         connectedUsers.set(user.uid, { ...user, ws })
-        //         // send over user list to everyone.
-        //         broadcastUserList()
-        //     } else {
-        //         console.log('User already exists')
-        //     }
-
-        //     ws.send(
-        //         JSON.stringify({
-        //             type: 'connected-users',
-        //             users: [...connectedUsers.values()].map(({ ws, ...user }) => user),
-        //         })
-        //     )
-        // }
-
         if (data.type === 'join') {
             user = data.user
             console.log(user)
@@ -252,35 +233,6 @@ function broadcastKillPeer(userUID) {
         }
     })
 }
-
-// function broadcastUserList() {
-//     const userList = [...connectedUsers.values()].map(({ ws, ...user }) => user)
-//     // Broadcast message to all clients except sender
-//     wss.clients.forEach((client) => {
-//         if (client.readyState === WebSocket.OPEN) {
-//             client.send(JSON.stringify({ type: 'connected-users', users: userList }))
-//         }
-//     })
-// }
-
-// function broadCastUserMessage(messageData) {
-//     console.log(messageData)
-//     const userList = [...connectedUsers.values()].map(({ ws, ...user }) => user)
-//     // Broadcast message to all clients except sender
-//     wss.clients.forEach((client) => {
-//         if (client.readyState === WebSocket.OPEN) {
-//             console.log(userList)
-//             console.log('sending to clients')
-//             client.send(
-//                 JSON.stringify({
-//                     type: 'getRoomMessage',
-//                     message: messageData.message,
-//                     sender: messageData.sender,
-//                 })
-//             )
-//         }
-//     })
-// }
 
 //broadcast user counts every 15 seconds
 setInterval(broadcastLobbyUserCounts, 15000)

@@ -26,7 +26,7 @@ I use root to do all of the installing stuff from git / pulling in the different
 using pm2 as a process manager on runner
 we have to install pm2 and bun globally 
 
-pm2 start <filename>
+pm2 start <file path>
 
 
 -- security considerations

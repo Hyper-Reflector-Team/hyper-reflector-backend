@@ -7,6 +7,7 @@
     "server": "node src/express-server/express.js",
     "signal": "node signal-server.ts",
     "v2Signal": "node src/v2/v2Signal.ts",
+    "v2Punch": "node src/v2/v2Holepuncher.ts",
     "punch": "node src/holepuncher.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -23,6 +24,7 @@
     "firebase-admin": "^13.0.2",
     "ts-node": "^10.9.2",
     "typescript": "~4.5.4",
+    "uuid": "^11.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
