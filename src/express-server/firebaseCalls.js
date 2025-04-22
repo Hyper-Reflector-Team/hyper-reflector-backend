@@ -110,6 +110,7 @@ async function getUserName(uid) {
 
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
+    if (uid === matchData.player1) return
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const sessionSnap = await sessionRef.get()
@@ -176,7 +177,7 @@ async function uploadMatchData(matchData, uid) {
         await globalStatsRef.set(
             {
                 globalNumberOfMatches: FieldValue.increment(1),
-                [`globalWinCount.${playerKey}`]: FieldValue.increment(1),
+                [`globalWinCount.${matchResult}`]: FieldValue.increment(1),
                 [`globalCharacterChoice.${p1Char}`]: FieldValue.increment(1),
                 [`globalCharacterChoice.${p2Char}`]: FieldValue.increment(1),
             },
