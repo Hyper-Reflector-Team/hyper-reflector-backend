@@ -110,6 +110,8 @@ async function getUserName(uid) {
 
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
+    console.log('match trying to be uploaded')
+    console.log(matchData, uid)
     const globalMatchRef = db.collection('global-matches').doc(matchData.matchId)
 
     // check to see if the match has already been logged
@@ -125,7 +127,7 @@ async function uploadMatchData(matchData, uid) {
     // const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
     // const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
     // const playerKey = parsedMatchData['p1-win'] ? 'p1' : 'p2'
-
+    console.log('parsing match data')
     // parse the match data
     const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
     const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
