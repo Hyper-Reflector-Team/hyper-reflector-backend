@@ -146,7 +146,6 @@ async function uploadMatchData(matchData, uid) {
         player2Super: parsedMatchData['player2-super'],
         matchData: matchData.matchData,
         results: parsedMatchData['p1-win'] ? '1' : '2',
-        matchId,
         timestamp: FieldValue.serverTimestamp(),
     }
 
