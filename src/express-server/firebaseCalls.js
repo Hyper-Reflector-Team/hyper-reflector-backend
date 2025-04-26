@@ -9,9 +9,11 @@ const usersRef = db.collection('users')
 const logInUserRef = db.collection('logged-in')
 
 async function addLoggedInUser(userEmail, token) {
-    await logInUserRef.doc(userEmail).set({
-        token,
-    })
+    if (userEmail && token) {
+        await logInUserRef.doc(userEmail).set({
+            token,
+        })
+    }
 }
 
 async function fetchLoggedInUser(userEmail) {
@@ -26,6 +28,7 @@ async function fetchLoggedInUser(userEmail) {
 }
 
 async function removeLoggedInUser(userEmail) {
+    if (!userEmail.length) return
     const data = await logInUserRef.doc(userEmail).delete()
     if (data) {
         console.log(data)
@@ -33,6 +36,7 @@ async function removeLoggedInUser(userEmail) {
 }
 
 async function createAccount({ name, email }, token) {
+    if (!token) return
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (querySnapshot.empty) {
         // create a new user
@@ -48,6 +52,7 @@ async function createAccount({ name, email }, token) {
 }
 
 async function updateUserData(data, token) {
+    if (!token) return
     const allowedFields = ['userName', 'userTitle', 'knownAliases']
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
@@ -70,6 +75,7 @@ async function updateUserData(data, token) {
 }
 
 async function getUserData(uid) {
+    if (!uid) return
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
         const doc = querySnapshot.docs[0]
@@ -81,6 +87,7 @@ async function getUserData(uid) {
 }
 
 async function getUserAccountByAuth(token) {
+    if (!token) return
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
         console.log(querySnapshot.docs[0].data())
@@ -92,6 +99,7 @@ async function getUserAccountByAuth(token) {
 
 // get custom token for auto log in
 async function getCustomToken(idToken) {
+    if (!idToken) return
     // console.log(idToken, ' requesting a new custom token')
     const customToken = await getAuth().createCustomToken(idToken)
     return customToken
@@ -99,6 +107,7 @@ async function getCustomToken(idToken) {
 
 // match related functions
 async function getUserName(uid) {
+    if (!uid) return
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
         console.log('trying to get docs', querySnapshot.docs)
