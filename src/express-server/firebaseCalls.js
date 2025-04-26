@@ -119,6 +119,9 @@ async function uploadMatchData(matchData, uid) {
     const p1Char = dataConverter.getCharacterByCode(parsed['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsed['player2-char'])
     const matchResult = parsed['p1-win'] ? '1' : '2'
+    // used for updating counts
+    let p1Wins = 0
+    let p2Wins = 0
 
     const matchEntry = {
         matchData: matchData.matchData,
@@ -139,18 +142,31 @@ async function uploadMatchData(matchData, uid) {
             player1Name: await getUserName(matchData.player1),
             player2Name: await getUserName(matchData.player2),
             matches: [matchEntry],
+            player1Wins: matchResult === '1' ? 1 : 0,
+            player2Wins: matchResult === '2' ? 1 : 0,
             timestamp: Date.now(),
         }
 
         await sessionRef.set(session)
     } else {
-        // Append to existing session
+        // Get current matches first (avoid fetching *after* the update)
+        const existingSession = sessionSnap.data()
+        const allMatches = [...(existingSession.matches || []), matchEntry]
+
+        for (const match of allMatches) {
+            if (match.result === '1') p1Wins++
+            if (match.result === '2') p2Wins++
+        }
+
+        // Single update
         await sessionRef.update({
             matches: FieldValue.arrayUnion(matchEntry),
+            player1Wins: p1Wins,
+            player2Wins: p2Wins,
         })
     }
 
-    // Store under each player's recent match sessions
+    // recent match session meta data for player profile
     const batch = db.batch()
     for (const player of [matchData.player1, matchData.player2]) {
         if (!player) continue
@@ -162,9 +178,12 @@ async function uploadMatchData(matchData, uid) {
         batch.set(
             ref,
             {
+                player1Name: await getUserName(matchData.player1),
+                player2Name: await getUserName(matchData.player2),
                 sessionId: matchData.matchId,
-                opponent: player === matchData.player1 ? matchData.player2 : matchData.player1,
                 timestamp: Date.now(),
+                p1Wins,
+                p2Wins,
             },
             { merge: true }
         )
@@ -191,89 +210,6 @@ async function uploadMatchData(matchData, uid) {
 
     console.log(`Uploaded match (as part of session ${matchData.matchId})`)
 }
-
-// async function uploadMatchData(matchData, uid) {
-//     if (!uid || !matchData.matchId) return
-//     console.log('match trying to be uploaded')
-//     console.log(matchData, uid)
-//     const globalMatchRef = db.collection('global-matches').doc(matchData.matchId)
-
-//     // check to see if the match has already been logged
-//     const existingMatch = await globalMatchRef.get()
-//     if (existingMatch.exists) {
-//         console.log(`Match ${matchData.matchId} already exists. Skipping upload.`)
-//         return
-//     }
-
-//     // const matchIDRef = db.collection('recent-matches').doc(uid).collection('matches').doc()
-//     // const matchId = matchIDRef.id
-//     // const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
-//     // const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
-//     // const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
-//     // const playerKey = parsedMatchData['p1-win'] ? 'p1' : 'p2'
-//     console.log('parsing match data')
-//     // parse the match data
-//     const parsedMatchData = dataConverter.parseMatchData(matchData.matchData.raw)
-//     const p1Char = dataConverter.getCharacterByCode(parsedMatchData['player1-char'])
-//     const p2Char = dataConverter.getCharacterByCode(parsedMatchData['player2-char'])
-//     const playerKey = parsedMatchData['p1-win'] ? 'p1' : 'p2'
-
-//     const matchObject = {
-//         uniqueMatchId: matchData.matchId,
-//         player1Name: matchData.player1 ? await getUserName(matchData.player1) : null,
-//         player1: matchData.player1 || 'p1 unknown',
-//         player1Char: p1Char || 'p1 char unknown',
-//         player1Super: parsedMatchData['player1-super'],
-//         player2Name: matchData.player2 ? await getUserName(matchData.player2) : null,
-//         player2: matchData.player2 || 'p2 unknown',
-//         player2Char: p2Char || 'p2 char unknown',
-//         player2Super: parsedMatchData['player2-super'],
-//         matchData: matchData.matchData,
-//         results: parsedMatchData['p1-win'] ? '1' : '2',
-//         timestamp: FieldValue.serverTimestamp(),
-//     }
-
-//     // Save globally
-//     await globalMatchRef.set(matchObject)
-
-//     // Save under both players' profiles
-//     const batch = db.batch()
-//     if (matchData.player1) {
-//         const ref1 = db
-//             .collection('recent-matches')
-//             .doc(matchData.player1)
-//             .collection('matches')
-//             .doc(matchData.matchId)
-//         batch.set(ref1, matchObject)
-//     }
-//     if (matchData.player2) {
-//         const ref2 = db
-//             .collection('recent-matches')
-//             .doc(matchData.player2)
-//             .collection('matches')
-//             .doc(matchData.matchId)
-//         batch.set(ref2, matchObject)
-//     }
-//     await batch.commit()
-
-//     // Update global stats
-//     const globalStatsRef = db.collection('global-stats').doc('global-match-stats')
-//     try {
-//         await globalStatsRef.set(
-//             {
-//                 globalNumberOfMatches: FieldValue.increment(1),
-//                 [`globalWinCount.${playerKey}`]: FieldValue.increment(1),
-//                 [`globalCharacterChoice.${p1Char}`]: FieldValue.increment(1),
-//                 [`globalCharacterChoice.${p2Char}`]: FieldValue.increment(1),
-//             },
-//             { merge: true }
-//         )
-
-//         console.log(`Match ${matchData.matchId} successfully uploaded and stats updated.`)
-//     } catch (error) {
-//         console.error('Error updating global stats:', error)
-//     }
-// }
 
 async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId = null) {
     if (!uid) return null
