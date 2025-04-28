@@ -100,7 +100,6 @@ async function getUserAccountByAuth(token) {
 // get custom token for auto log in
 async function getCustomToken(idToken) {
     if (!idToken) return
-    // console.log(idToken, ' requesting a new custom token')
     const customToken = await getAuth().createCustomToken(idToken)
     return customToken
 }
@@ -110,7 +109,6 @@ async function getUserName(uid) {
     if (!uid) return
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
-        console.log('trying to get docs', querySnapshot.docs)
         return querySnapshot.docs[0].data().userName
     } else {
         return null
@@ -119,7 +117,7 @@ async function getUserName(uid) {
 
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
-    if (uid === matchData.player1) return
+    if (uid === !matchData.player1) return
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const sessionSnap = await sessionRef.get()
@@ -143,6 +141,7 @@ async function uploadMatchData(matchData, uid) {
     }
 
     if (!sessionSnap.exists) {
+        console.log('snap shot did not exist')
         // First match in session, create new document
         const session = {
             sessionId: matchData.matchId,
@@ -158,6 +157,7 @@ async function uploadMatchData(matchData, uid) {
 
         await sessionRef.set(session)
     } else {
+        console.log('snap shot did exist')
         // Get current matches first (avoid fetching *after* the update)
         const existingSession = sessionSnap.data()
         const allMatches = [...(existingSession.matches || []), matchEntry]
@@ -205,9 +205,41 @@ async function uploadMatchData(matchData, uid) {
         await globalStatsRef.set(
             {
                 globalNumberOfMatches: FieldValue.increment(1),
-                [`globalWinCount.${matchResult}`]: FieldValue.increment(1),
-                [`globalCharacterChoice.${p1Char}`]: FieldValue.increment(1),
-                [`globalCharacterChoice.${p2Char}`]: FieldValue.increment(1),
+                globalWinCount: {
+                    [`${matchResult}`]: FieldValue.increment(1),
+                },
+                globalCharacterChoice: {
+                    [`${p1Char}`]: {
+                        picks: FieldValue.increment(1),
+                        superChoice: {
+                            [`${parsed['player1-super']}`]: {
+                                wins:
+                                    matchResult === '1'
+                                        ? FieldValue.increment(1)
+                                        : FieldValue.increment(0),
+                                losses:
+                                    matchResult === '2'
+                                        ? FieldValue.increment(1)
+                                        : FieldValue.increment(0),
+                            },
+                        },
+                    },
+                    [`${p2Char}`]: {
+                        picks: FieldValue.increment(1),
+                        superChoice: {
+                            [`${parsed['player2-super']}`]: {
+                                wins:
+                                    matchResult === '1'
+                                        ? FieldValue.increment(1)
+                                        : FieldValue.increment(0),
+                                losses:
+                                    matchResult === '2'
+                                        ? FieldValue.increment(1)
+                                        : FieldValue.increment(0),
+                            },
+                        },
+                    },
+                },
             },
             { merge: true }
         )
@@ -220,10 +252,33 @@ async function uploadMatchData(matchData, uid) {
     console.log(`Uploaded match (as part of session ${matchData.matchId})`)
 }
 
+async function getGlobalSet(uid, matchId) {
+    if (!uid) return null
+    const setCollectionRef = db.collection('global-matches').doc(matchId)
+    const data = await setCollectionRef.get()
+    if (!data.empty) {
+        if (!data.data()) return null
+        return data.data()
+    } else {
+        return null
+    }
+}
+
+async function getUserName(uid) {
+    if (!uid) return
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+    if (!querySnapshot.empty) {
+        console.log('trying to get docs', querySnapshot.docs)
+        return querySnapshot.docs[0].data().userName
+    } else {
+        return null
+    }
+}
+
 async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId = null) {
     if (!uid) return null
 
-    const matchCollectionRef = db.collection('recent-matches').doc(uid).collection('matches')
+    const matchCollectionRef = db.collection('recent-matches').doc(uid).collection('sessions')
     const totalMatchesSnapshot = await matchCollectionRef.count().get()
     const totalMatches = totalMatchesSnapshot.data().count
 
@@ -259,6 +314,7 @@ async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId 
 
 module.exports = {
     getUserMatches,
+    getGlobalSet,
     uploadMatchData,
     getUserName,
     getCustomToken,

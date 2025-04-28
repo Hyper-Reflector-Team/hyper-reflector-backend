@@ -151,6 +151,7 @@ app.post('/get-custom-token', async (req, res) => {
 
 // match related
 app.post('/upload-match', (req, res) => {
+    console.log('someone is trying to upload a match')
     // if user cannot be verified kick them out of the request
     getAuth()
         .verifyIdToken(req.body.idToken)
@@ -185,6 +186,28 @@ app.post('/get-user-matches', async (req, res) => {
                 lastVisible: lastVisible ? lastVisible.id : null,
                 firstVisible: firstVisible ? firstVisible.id : null,
                 totalMatches,
+            })
+        } else {
+            return res.status(404).json({ error: 'No matches found' })
+        }
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/get-global-set', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const { userUID, matchId } = req.body
+
+        // Fetch matches with pagination
+        const globalSet = await api.getGlobalSet(userUID, matchId)
+
+        if (globalSet) {
+            return res.json({
+                globalSet,
             })
         } else {
             return res.status(404).json({ error: 'No matches found' })
