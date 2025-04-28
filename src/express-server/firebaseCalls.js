@@ -264,6 +264,19 @@ async function getGlobalSet(uid, matchId) {
     }
 }
 
+async function getAllTitles(uid) {
+    if (!uid) return null
+    const titleCollectionRef = db.collection('titles').doc('data')
+    const data = await titleCollectionRef.get()
+    if (!data.empty) {
+        if (!data.data()) return null
+        console.log(data.data())
+        return data.data()
+    } else {
+        return null
+    }
+}
+
 async function getUserName(uid) {
     if (!uid) return
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
@@ -320,6 +333,7 @@ module.exports = {
     getCustomToken,
     getUserAccountByAuth,
     getUserData,
+    getAllTitles,
     updateUserData,
     createAccount,
     removeLoggedInUser,

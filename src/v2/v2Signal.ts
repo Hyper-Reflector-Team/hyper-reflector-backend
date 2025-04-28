@@ -124,20 +124,6 @@ wss.on('connection', (ws) => {
             broadCastUserMessage(data)
         }
 
-        // handle user making call
-        // if (data.type === 'callUser') {
-        //     const { callerId, calleeId, localDescription } = data.data
-
-        //     if (connectedUsers.has(calleeId)) {
-        //         // get the user we are calling from the user list
-        //         const callee = connectedUsers.get(calleeId)
-        //         callee.ws.send(
-        //             JSON.stringify({ type: 'incomingCall', callerId, offer: localDescription })
-        //         ) // local description is the offer
-        //     } else {
-        //         ws.send(JSON.stringify({ type: 'error', message: 'user not online' }))
-        //     }
-        // }
         if (data.type === 'callUser') {
             const { callerId, calleeId, localDescription } = data.data
             console.log(connectedUsers)

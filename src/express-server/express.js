@@ -218,6 +218,28 @@ app.post('/get-global-set', async (req, res) => {
     }
 })
 
+app.post('/get-titles', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const { userUID } = req.body
+
+        // Fetch matches with pagination
+        const titleData = await api.getAllTitles(userUID)
+
+        if (titleData) {
+            return res.json({
+                titleData,
+            })
+        } else {
+            return res.status(404).json({ error: 'No matches found' })
+        }
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
 // init listen
 app.listen(port, () => {
     console.log(`firebase api on port ${port}`)
