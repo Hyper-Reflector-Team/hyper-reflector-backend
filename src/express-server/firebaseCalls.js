@@ -196,7 +196,42 @@ async function uploadMatchData(matchData, uid) {
             },
             { merge: true }
         )
+
+        const statsRef = db.collection('player-stats').doc(player)
+        const whichPlayer = matchData.player1 === player ? '1' : '2'
+        const playerWon = matchResult === whichPlayer ? true : false
+        const character = whichPlayer === '1' ? p1Char : p2Char
+        const superIndex = whichPlayer === '1' ? parsed['player1-super'] : parsed['player2-super']
+        batch.set(
+            statsRef,
+            {
+                totalGames: FieldValue.increment(1),
+                totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
+                totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
+                winStreak: playerWon ? FieldValue.increment(1) : 0, // if lost, reset streak
+                characters: {
+                    [`${character}`]: {
+                        picks: FieldValue.increment(1),
+                        superChoice: {
+                            [`${superIndex}`]: {
+                                wins:
+                                    matchResult === whichPlayer
+                                        ? FieldValue.increment(1)
+                                        : FieldValue.increment(0),
+                                losses:
+                                    matchResult === whichPlayer
+                                        ? FieldValue.increment(1)
+                                        : FieldValue.increment(0),
+                            },
+                        },
+                    },
+                },
+                lastUpdated: Date.now(),
+            },
+            { merge: true }
+        )
     }
+
     await batch.commit()
 
     // Update global stats
@@ -256,6 +291,31 @@ async function getGlobalSet(uid, matchId) {
     if (!uid) return null
     const setCollectionRef = db.collection('global-matches').doc(matchId)
     const data = await setCollectionRef.get()
+    if (!data.empty) {
+        if (!data.data()) return null
+        return data.data()
+    } else {
+        return null
+    }
+}
+
+async function getGlobalStats(uid) {
+    console.log('attempting to grab all stats')
+    if (!uid) return null
+    const statCollection = db.collection('global-stats').doc('global-match-stats')
+    const data = await statCollection.get()
+    if (!data.empty) {
+        if (!data.data()) return null
+        return data.data()
+    } else {
+        return null
+    }
+}
+
+async function getPlayerStats(uid) {
+    if (!uid) return null
+    const statCollection = db.collection('player-stats').doc(uid)
+    const data = await statCollection.get()
     if (!data.empty) {
         if (!data.data()) return null
         return data.data()
@@ -328,6 +388,8 @@ async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId 
 module.exports = {
     getUserMatches,
     getGlobalSet,
+    getGlobalStats,
+    getPlayerStats,
     uploadMatchData,
     getUserName,
     getCustomToken,

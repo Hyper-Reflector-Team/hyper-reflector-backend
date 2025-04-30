@@ -126,7 +126,6 @@ app.post('/create-account', (req, res) => {
 
 app.post('/get-user-auth', async (req, res) => {
     try {
-        //get token
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
         const uid = decodedToken.uid
         const data = await api.getUserAccountByAuth(uid)
@@ -139,7 +138,6 @@ app.post('/get-user-auth', async (req, res) => {
 
 app.post('/get-custom-token', async (req, res) => {
     try {
-        //get token
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
         const uid = decodedToken.uid
         const data = await api.getCustomToken(uid)
@@ -202,7 +200,6 @@ app.post('/get-global-set', async (req, res) => {
         const uid = decodedToken.uid
         const { userUID, matchId } = req.body
 
-        // Fetch matches with pagination
         const globalSet = await api.getGlobalSet(userUID, matchId)
 
         if (globalSet) {
@@ -211,6 +208,49 @@ app.post('/get-global-set', async (req, res) => {
             })
         } else {
             return res.status(404).json({ error: 'No matches found' })
+        }
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/get-global-stats', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const { userUID } = req.body
+
+        const globalStatSet = await api.getGlobalStats(userUID)
+
+        if (globalStatSet) {
+            return res.json({
+                globalStatSet,
+            })
+        } else {
+            return res.status(404).json({ error: 'No global stats found' })
+        }
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/get-player-stats', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const { userUID } = req.body
+
+        // Fetch matches with pagination
+        const playerStatSet = await api.getPlayerStats(userUID)
+
+        if (playerStatSet) {
+            return res.json({
+                playerStatSet,
+            })
+        } else {
+            return res.status(404).json({ error: 'No player stat data found' })
         }
     } catch (err) {
         console.error(err)
