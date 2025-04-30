@@ -222,7 +222,7 @@ app.post('/get-global-stats', async (req, res) => {
         const { userUID } = req.body
 
         const globalStatSet = await api.getGlobalStats(userUID)
-
+        console.log(globalStatSet)
         if (globalStatSet) {
             return res.json({
                 globalStatSet,

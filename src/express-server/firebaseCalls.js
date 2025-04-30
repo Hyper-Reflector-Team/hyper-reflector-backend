@@ -300,18 +300,23 @@ async function getGlobalSet(uid, matchId) {
 }
 
 async function getGlobalStats(uid) {
-    console.log('attempting to grab all stats')
     if (!uid) return null
-    const statCollection = db.collection('global-stats').doc('global-match-stats')
-    const data = await statCollection.get()
-    if (!data.empty) {
-        if (!data.data()) return null
-        return data.data()
-    } else {
+
+    const statDocRef = db.collection('global-stats').doc('global-match-stats')
+    const docSnap = await statDocRef.get()
+    console.log(docSnap)
+    if (!docSnap.exists) {
         return null
     }
-}
 
+    const data = docSnap.data()
+    console.log(data)
+    if (!data) {
+        return null
+    }
+
+    return data
+}
 async function getPlayerStats(uid) {
     if (!uid) return null
     const statCollection = db.collection('player-stats').doc(uid)
