@@ -219,7 +219,7 @@ async function uploadMatchData(matchData, uid) {
                                         ? FieldValue.increment(1)
                                         : FieldValue.increment(0),
                                 losses:
-                                    matchResult === whichPlayer
+                                    matchResult !== whichPlayer
                                         ? FieldValue.increment(1)
                                         : FieldValue.increment(0),
                             },
