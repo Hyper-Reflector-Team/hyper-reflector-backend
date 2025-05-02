@@ -7,6 +7,7 @@
     "server": "node src/express-server/express.js",
     "signal": "node signal-server.ts",
     "v2Signal": "node src/v2/v2Signal.ts",
+    "v3Signal": "node src/v2/v3Signal.ts",
     "v2Punch": "node src/v2/v2Holepuncher.ts",
     "punch": "node src/holepuncher.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
