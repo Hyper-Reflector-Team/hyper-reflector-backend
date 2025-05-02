@@ -5,7 +5,7 @@ const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
 
-const wss = new WebSocket.Server({ port: 3001 })
+const wss = new WebSocket.Server({ port: 3002 })
 
 const connectedUsers = new Map()
 const lobbies = new Map()
