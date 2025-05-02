@@ -148,7 +148,7 @@ wss.on('connection', (ws) => {
                 // if caller exists we get them by id from user list
                 const caller = connectedUsers.get(callerId)
                 caller.ws.send(
-                    JSON.stringify({ type: 'callAnswered', callerId, answer, answererId })
+                    JSON.stringify({ type: 'callAnswered', data: { callerId, answer, answererId } })
                 )
             }
         }
@@ -160,7 +160,9 @@ wss.on('connection', (ws) => {
             if (connectedUsers.has(callerId)) {
                 // if caller exists we get them by id from user list
                 const caller = connectedUsers.get(callerId)
-                caller.ws.send(JSON.stringify({ type: 'callDeclined', callerId, answererId }))
+                caller.ws.send(
+                    JSON.stringify({ type: 'callDeclined', data: { callerId, answererId } })
+                )
             }
         }
 
@@ -171,7 +173,7 @@ wss.on('connection', (ws) => {
             if (connectedUsers.has(targetId)) {
                 const targetUser = connectedUsers.get(targetId)
                 targetUser.ws.send(
-                    JSON.stringify({ type: 'iceCandidate', candidate, userUID: callerId })
+                    JSON.stringify({ type: 'iceCandidate', data: { candidate, userUID: callerId } })
                 )
             }
         }
