@@ -170,9 +170,7 @@ wss.on('connection', (ws) => {
             console.log('we got an ice candidate', toUID, candidate)
             if (connectedUsers.has(toUID)) {
                 const targetUser = connectedUsers.get(toUID)
-                targetUser.ws.send(
-                    JSON.stringify({ type: 'iceCandidate', candidate, userUID: fromUID })
-                )
+                targetUser.ws.send(JSON.stringify({ type: 'iceCandidate', candidate, fromUID }))
             }
         }
 
