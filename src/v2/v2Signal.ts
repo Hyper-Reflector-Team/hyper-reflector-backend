@@ -257,7 +257,7 @@ function broadCastUserMessage(messageData) {
                 JSON.stringify({
                     type: 'getRoomMessage',
                     message,
-                    sender, // you can sanitize this if needed
+                    sender,
                 })
             )
         }

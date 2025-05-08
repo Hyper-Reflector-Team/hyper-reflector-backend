@@ -238,7 +238,6 @@ setInterval(broadcastLobbyUserCounts, 15000)
 function broadCastUserMessage(messageData) {
     const { sender, message } = messageData
     const { uid, lobbyId } = sender
-    console.log(messageData)
 
     if (!lobbies.has(lobbyId)) {
         console.warn(`Lobby ${lobbyId} not found for message from ${uid}`)
@@ -253,7 +252,7 @@ function broadCastUserMessage(messageData) {
                 JSON.stringify({
                     type: 'getRoomMessage',
                     message,
-                    sender, // you can sanitize this if needed
+                    sender,
                 })
             )
         }
