@@ -191,6 +191,41 @@ wss.on('connection', (ws) => {
         if (data.type === 'matchEnd') {
             disconnectUserFromUsers(data.userUID)
         }
+
+        // ping manager stuff
+
+        if (data.type === 'webrtc-ping-offer') {
+            const { to, from, offer } = data
+            if (to === from) return
+            console.log('sending offer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-offer', offer, from }))
+            }
+        }
+
+        if (data.type === 'webrtc-ping-answer') {
+            const { to, from, answer } = data
+            console.log('we are sending an asnwer', data)
+            if (to === from) return
+            console.log('sending answer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
+            }
+        }
+
+        if (data.type === 'webrtc-ping-candidate') {
+            const { to, from, candidate } = data
+            if (to === from) return
+            console.log('we got an ice candidate', to, candidate)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(
+                    JSON.stringify({ type: 'webrtc-ping-candidate', candidate, from })
+                )
+            }
+        }
     })
 
     //handle close socket
@@ -354,4 +389,4 @@ function broadcastLobbyRemoved(lobbyId) {
     })
 }
 
-console.log('WebSocket signaling server running on port 3001...')
+console.log('WebSocket signaling server running on port 3003...')
