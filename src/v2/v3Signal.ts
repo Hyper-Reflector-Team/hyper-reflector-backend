@@ -12,15 +12,27 @@ const lobbies = new Map()
 const lobbyTimeouts = new Map()
 const lobbyMeta = new Map() // keep track of lobby metadata like password
 
-wss.on('connection', (ws) => {
+const geoip = require('fast-geoip')
+
+async function getGeoLocation(req) {
+    console.log(req.socket.remoteAddress)
+    const ip = req.socket.remoteAddress
+    const geo = await geoip.lookup(ip)
+    console.log(geo)
+    // after this lets update the user via firebase with last known country code and ping
+}
+
+wss.on('connection', (ws, req) => {
     let user
 
-    ws.on('message', (message) => {
+    getGeoLocation(req)
+    // get the geo location based on websocket ip
+
+    ws.on('message', async (message, req) => {
         const data = JSON.parse(message)
 
         if (data.type === 'join') {
             user = data.user
-            // console.log(user)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
