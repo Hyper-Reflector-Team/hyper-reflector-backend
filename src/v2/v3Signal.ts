@@ -12,15 +12,27 @@ const lobbies = new Map()
 const lobbyTimeouts = new Map()
 const lobbyMeta = new Map() // keep track of lobby metadata like password
 
-wss.on('connection', (ws) => {
+const geoip = require('fast-geoip')
+
+async function getGeoLocation(req) {
+    console.log(req.socket.remoteAddress.split('::ffff:')[1])
+    const ip = req.socket.remoteAddress.split('::ffff:')[1]
+    const geo = await geoip.lookup(ip)
+    console.log(geo)
+    // after this lets update the user via firebase with last known country code and ping
+}
+
+wss.on('connection', (ws, req) => {
     let user
 
-    ws.on('message', (message) => {
+    getGeoLocation(req)
+    // get the geo location based on websocket ip
+
+    ws.on('message', async (message, req) => {
         const data = JSON.parse(message)
 
         if (data.type === 'join') {
             user = data.user
-            // console.log(user)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
@@ -191,6 +203,41 @@ wss.on('connection', (ws) => {
         if (data.type === 'matchEnd') {
             disconnectUserFromUsers(data.userUID)
         }
+
+        // ping manager stuff
+
+        if (data.type === 'webrtc-ping-offer') {
+            const { to, from, offer } = data
+            if (to === from) return
+            console.log('sending offer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-offer', offer, from }))
+            }
+        }
+
+        if (data.type === 'webrtc-ping-answer') {
+            const { to, from, answer } = data
+            console.log('we are sending an asnwer', data)
+            if (to === from) return
+            console.log('sending answer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
+            }
+        }
+
+        if (data.type === 'webrtc-ping-candidate') {
+            const { to, from, candidate } = data
+            if (to === from) return
+            console.log('we got an ice candidate', to, candidate)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(
+                    JSON.stringify({ type: 'webrtc-ping-candidate', candidate, from })
+                )
+            }
+        }
     })
 
     //handle close socket
@@ -354,4 +401,4 @@ function broadcastLobbyRemoved(lobbyId) {
     })
 }
 
-console.log('WebSocket signaling server running on port 3001...')
+console.log('WebSocket signaling server running on port 3003...')
