@@ -15,8 +15,8 @@ const lobbyMeta = new Map() // keep track of lobby metadata like password
 const geoip = require('fast-geoip')
 
 async function getGeoLocation(req) {
-    console.log(req.socket.remoteAddress)
-    const ip = req.socket.remoteAddress
+    console.log(req.socket.remoteAddress.split('::ffff:')[1])
+    const ip = req.socket.remoteAddress.split('::ffff:')[1]
     const geo = await geoip.lookup(ip)
     console.log(geo)
     // after this lets update the user via firebase with last known country code and ping
