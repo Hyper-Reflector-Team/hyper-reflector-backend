@@ -4,21 +4,33 @@
 const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
+const geoip = require('fast-geoip')
 
 const wss = new WebSocket.Server({ port: 3003 })
-
 const connectedUsers = new Map()
 const lobbies = new Map()
 const lobbyTimeouts = new Map()
 const lobbyMeta = new Map() // keep track of lobby metadata like password
-
-const geoip = require('fast-geoip')
 
 async function getGeoLocation(req) {
     console.log(req.socket.remoteAddress.split('::ffff:')[1])
     const ip = req.socket.remoteAddress.split('::ffff:')[1]
     const geo = await geoip.lookup(ip)
     console.log(geo)
+    const body = {
+        lastKnownPing: 10,
+        countryCode: 'JP',
+    }
+    axios
+        .post(`http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-data`, body, {
+            'Content-Type': 'application/json',
+        })
+        .then(() => {
+            console.log('updated user data, ', JSON.stringify(body))
+        })
+        .catch((error) => {
+            console.error('Error setting data:', error.message)
+        })
     // after this lets update the user via firebase with last known country code and ping
 }
 
