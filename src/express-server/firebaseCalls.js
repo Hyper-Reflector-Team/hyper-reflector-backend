@@ -53,7 +53,7 @@ async function createAccount({ name, email }, token) {
 
 async function updateUserData(data, token) {
     if (!token) return
-    const allowedFields = ['userName', 'userTitle', 'knownAliases']
+    const allowedFields = ['userName', 'userTitle', 'knownAliases', 'countryCode', 'lastKnownPing']
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
         .reduce((obj, key) => ({ ...obj, [key]: data[key] }), {})
