@@ -5,6 +5,7 @@ const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
 const geoip = require('fast-geoip')
+const geolib = require('geolib')
 
 const wss = new WebSocket.Server({ port: 3003 })
 const connectedUsers = new Map()
@@ -12,39 +13,204 @@ const lobbies = new Map()
 const lobbyTimeouts = new Map()
 const lobbyMeta = new Map() // keep track of lobby metadata like password
 
-async function getGeoLocation(req) {
-    console.log(req.socket.remoteAddress.split('::ffff:')[1])
+// function findBestPeer(userId) {
+//     const user = connectedUsers[userId]
+//     let bestPeer = null
+//     let lowestPing = Infinity
+
+//     for (const [peerId, peer] of Object.entries(connectedUsers)) {
+//       if (peerId === userId) continue
+//       const ping = user.lastKnownPings[peerId] || estimatePing(user.geo, peer.geo)
+//       if (ping < lowestPing) {
+//         bestPeer = peerId
+//         lowestPing = ping
+//       }
+//     }
+
+//     return bestPeer
+//   }
+
+async function handleEstimatePing(data, ws) {
+    const { data: userData } = data
+    if (!userData.userA || !userData.userB) return
+
+    const userAResponse = await axios.post(
+        `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/get-user-server`,
+        { userUID: userData.userA.id },
+        {
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+            },
+        }
+    )
+
+    const userA = userAResponse.data
+    const userB = connectedUsers.get(userData.userB.id)?.userData
+    if (!userA?.pingLat || !userB?.pingLat) return
+
+    let distance = 1
+    try {
+        distance = geolib.getDistance(
+            { latitude: userA.pingLat, longitude: userA.pingLon },
+            { latitude: userB.pingLat, longitude: userB.pingLon }
+        )
+    } catch (error) {
+        console.error('geolib error:', error)
+    }
+
+    const estimatedRTT = Math.round(distance / 1000 / 200 + 20)
+    const existingPings = Array.isArray(userA.lastKnownPings) ? userA.lastKnownPings : []
+    const filteredPings = existingPings.filter((p) => p.id !== userData.userB.id)
+    const updatedPings = [
+        ...filteredPings,
+        {
+            id: userData.userB.id,
+            ping: `${estimatedRTT}`,
+            isUnstable: userData.userB.stability,
+        },
+    ]
+
+    const body = {
+        userData: {
+            lastKnownPings: updatedPings,
+        },
+        uid: userData.userA.id,
+    }
+
+    try {
+        await axios.post(
+            `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-ping`,
+            body,
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                },
+            }
+        )
+    } catch (err) {
+        console.error('Failed to update user ping:', err)
+        return
+    }
+
+    if (ws.uid === userData.userA.id) {
+        ws.send(JSON.stringify({ type: 'update-user-pinged', data: body.userData }))
+    }
+}
+
+function getPeerPingsForUser(sourceUser) {
+    const results = []
+
+    for (const [id, targetUser] of connectedUsers.entries()) {
+        if (id === sourceUser.uid) continue
+
+        if (
+            !targetUser.pingLat ||
+            !targetUser.pingLon ||
+            !sourceUser.pingLat ||
+            !sourceUser.pingLon
+        ) {
+            continue
+        }
+
+        const distance = geolib.getDistance(
+            { latitude: sourceUser.pingLat, longitude: sourceUser.pingLon },
+            { latitude: targetUser.pingLat, longitude: targetUser.pingLon }
+        )
+
+        const distanceKm = distance / 1000
+        const estimatedRTT = Math.round(distanceKm / 200 + 20)
+
+        results.push({
+            id: targetUser.uid,
+            ping: estimatedRTT,
+            isUnstable: targetUser.stability ?? false,
+            countryCode: targetUser.countryCode ?? 'xx',
+        })
+    }
+
+    return results
+}
+
+async function getGeoLocation(req, user, ws) {
     const ip = req.socket.remoteAddress.split('::ffff:')[1]
     const geo = await geoip.lookup(ip)
-    console.log(geo)
-    const body = {
-        lastKnownPing: 10,
-        countryCode: 'JP',
+    const userGeoData = {
+        pingLat: geo.ll[0],
+        pingLon: geo.ll[1],
+        countryCode: geo.country || 'xx',
     }
-    axios
-        .post(`http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-data`, body, {
-            'Content-Type': 'application/json',
-        })
-        .then(() => {
-            console.log('updated user data, ', JSON.stringify(body))
-        })
-        .catch((error) => {
-            console.error('Error setting data:', error.message)
-        })
-    // after this lets update the user via firebase with last known country code and ping
+    const body = {
+        userData: userGeoData,
+        uid: user.uid,
+    }
+
+    try {
+        await axios.post(
+            `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-ping`,
+            body,
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                },
+            }
+        )
+    } catch (error) {
+        console.error('Geo update failed:', error)
+    }
+
+    const updatedUser = {
+        ...user,
+        ...userGeoData,
+    }
+    connectedUsers.set(user.uid, { ws, ...updatedUser })
+
+    const peerPings = getPeerPingsForUser(updatedUser)
+
+    if (ws.uid === user.uid) {
+        ws.send(
+            JSON.stringify({
+                type: 'update-user-pinged',
+                data: { ...userGeoData, lastKnownPings: peerPings },
+            })
+        )
+        // send ping out to every other user
+        for (const peer of peerPings) {
+            const peerConn = connectedUsers.get(peer.id)
+            if (!peerConn || !peerConn.ws) continue
+
+            const reversePing = {
+                isNewPing: true, // we use this to sift on the front end and make the update.
+                id: updatedUser.uid,
+                ping: peer.ping,
+                countryCode: updatedUser.countryCode || 'xx',
+                isUnstable: updatedUser.stability ?? false,
+            }
+
+            peerConn.ws.send(
+                JSON.stringify({
+                    type: 'update-user-pinged',
+                    data: reversePing,
+                })
+            )
+        }
+    }
 }
 
 wss.on('connection', (ws, req) => {
     let user
 
-    getGeoLocation(req)
     // get the geo location based on websocket ip
 
-    ws.on('message', async (message, req) => {
+    ws.on('message', async (message) => {
         const data = JSON.parse(message)
 
         if (data.type === 'join') {
             user = data.user
+            ws.uid = user.uid
+            getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
@@ -107,7 +273,6 @@ wss.on('connection', (ws, req) => {
 
             const meta = lobbyMeta.get(newLobbyId)
             if (meta && meta.pass !== pass) {
-                console.log('failed pass check', meta.pass, pass)
                 ws.send(
                     JSON.stringify({
                         type: 'error',
@@ -118,8 +283,6 @@ wss.on('connection', (ws, req) => {
             }
 
             if (!user) return
-
-            console.log('changing lobby bp 1')
             removeUserFromAllLobbies(user.uid)
 
             // make sure we clear timeouts when we start the new lobby
@@ -128,15 +291,12 @@ wss.on('connection', (ws, req) => {
                 lobbyTimeouts.delete(newLobbyId)
             }
 
-            console.log('changing lobby bp 2')
             if (!lobbies.has(newLobbyId)) {
                 lobbies.set(newLobbyId, new Map())
             }
-            console.log('changing lobby bp 3')
             lobbies.get(newLobbyId).set(user.uid, { ...user, ws })
             broadcastUserList(newLobbyId)
             broadcastLobbyUserCounts()
-            console.log('changing lobby bp 4')
         }
 
         if (data.type === 'userDisconnect') {
@@ -150,8 +310,8 @@ wss.on('connection', (ws, req) => {
         if (data.type === 'callUser') {
             const { callerId, calleeId, localDescription } = data.data
             //console.log(connectedUsers)
-            console.log('data - ', data)
-            console.log('socket recieved request to call from - ', callerId, ' to ', calleeId)
+            // console.log('data - ', data)
+            // console.log('socket recieved request to call from - ', callerId, ' to ', calleeId)
             if (connectedUsers.has(calleeId)) {
                 console.log('sending a call off to user', calleeId)
                 // get the user we are calling from the user list
@@ -200,10 +360,7 @@ wss.on('connection', (ws, req) => {
 
         if (data.type === 'sendStunOverSocket') {
             const { opponentId } = data
-            console.log('send stun over socket: ', data)
-            console.log(connectedUsers)
             if (connectedUsers.has(opponentId)) {
-                console.log('user found, sending data')
                 const targetUser = connectedUsers.get(opponentId)
                 targetUser.ws.send(
                     JSON.stringify({ type: 'receiveHolePunchStun', data: data.data })
@@ -250,11 +407,16 @@ wss.on('connection', (ws, req) => {
                 )
             }
         }
+
+        // ping gathering
+        if (data.type === 'estimate-ping-users') {
+            console.log('users trying to ping eachother')
+            handleEstimatePing(data, ws)
+        }
     })
 
     //handle close socket
     ws.on('close', async () => {
-        console.log('user disconnected', user.email)
         connectedUsers.delete(user.uid)
         removeUserFromAllLobbies(user.uid)
         const body = JSON.stringify({
@@ -336,7 +498,6 @@ function broadcastLobbyUserCounts() {
 
     for (const [lobbyId, users] of lobbies.entries()) {
         const meta = lobbyMeta.get(lobbyId)
-        console.log('lobby meta data', meta)
         updates.push({
             name: lobbyId,
             users: users.size,

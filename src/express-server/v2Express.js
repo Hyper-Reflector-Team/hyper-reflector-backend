@@ -5,6 +5,7 @@ const port = 8082
 const { initializeApp, cert } = require('firebase-admin/app')
 const { getAuth } = require('firebase-admin/auth')
 const serviceAccount = require('../../keys/service_account_key.json')
+const serverInfo = require('../../keys/server.ts')
 
 // we need to initialize the app before we require the api.
 initializeApp({
@@ -91,6 +92,20 @@ app.post('/update-user-data', (req, res) => {
         })
 })
 
+app.post('/update-user-ping', async (req, res) => {
+    const authHeader = req.headers['authorization']
+    const token = authHeader && authHeader.split(' ')[1]
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        console.log('no access')
+        return res.status(403).send('Forbidden')
+    }
+
+    await api.updateUserData(req.body.userData, req.body.uid)
+
+    res.status(200).send('Updated')
+})
+
 app.post('/get-user-data', async (req, res) => {
     try {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
@@ -106,6 +121,22 @@ app.post('/get-user-data', async (req, res) => {
     } catch (err) {
         console.error(err)
         res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/get-user-server', async (req, res) => {
+    const authHeader = req.headers.authorization
+    const token = authHeader && authHeader.split(' ')[1]
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        return console.log('no access')
+    }
+    const data = await api.getUserData(req.body.userUID)
+
+    if (data) {
+        return res.json(data)
+    } else {
+        return res.status(404).json({ error: 'No user found' })
     }
 })
 

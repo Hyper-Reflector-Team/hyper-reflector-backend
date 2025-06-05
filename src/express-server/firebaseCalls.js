@@ -1,5 +1,6 @@
 const { getAuth } = require('firebase-admin/auth')
-const { getFirestore, FieldValue, updateDoc } = require('firebase-admin/firestore')
+const { getFirestore, FieldValue } = require('firebase-admin/firestore')
+const gravatar = require('gravatar.js')
 const dataConverter = require('./data')
 
 // firebase related commands
@@ -28,7 +29,7 @@ async function fetchLoggedInUser(userEmail) {
 }
 
 async function removeLoggedInUser(userEmail) {
-    if (!userEmail.length) return
+    if (!userEmail?.length) return
     const data = await logInUserRef.doc(userEmail).delete()
     if (data) {
         console.log(data)
@@ -43,7 +44,7 @@ async function createAccount({ name, email }, token) {
         await usersRef.doc(email).set({
             userEmail: email,
             userName: name,
-            profilePicture: null,
+            userProfilePic: null,
             uid: token,
         })
     } else {
@@ -53,25 +54,70 @@ async function createAccount({ name, email }, token) {
 
 async function updateUserData(data, token) {
     if (!token) return
-    const allowedFields = ['userName', 'userTitle', 'knownAliases', 'countryCode', 'lastKnownPing']
+
+    const allowedFields = [
+        'userName',
+        'userTitle',
+        'knownAliases',
+        'countryCode',
+        'lastKnownPings',
+        'pingLat',
+        'pingLon',
+        'userProfilePic',
+        'gravEmail',
+    ]
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
         .reduce((obj, key) => ({ ...obj, [key]: data[key] }), {})
 
-    if (Object.keys(validData).length === 0) return null // Prevent empty/bogus updates
+    if (Object.keys(validData).length === 0) return null
 
-    const querySnapshot = await usersRef.where('uid', '==', token).get()
-    if (!querySnapshot.empty) {
-        const userDoc = querySnapshot.docs[0].ref
-        await userDoc.set(validData, { merge: true })
-        if (validData.userName) {
-            await userDoc.update({
-                knownAliases: FieldValue.arrayUnion(validData.userName),
-            })
+    const currentUserSnapshot = await usersRef.where('uid', '==', token).get()
+    if (currentUserSnapshot.empty) return null
+
+    const userDocRef = currentUserSnapshot.docs[0].ref
+    const currentUserData = currentUserSnapshot.docs[0].data()
+
+    const updates = {}
+
+    for (const key of Object.keys(validData)) {
+        const newValue = validData[key]
+        const currentValue = currentUserData[key]
+
+        if (newValue !== currentValue) {
+            updates[key] = newValue
         }
-    } else {
-        return null
     }
+
+    if (validData.gravEmail) {
+        try {
+            const newProfilePic = await gravatar.resolve(validData.gravEmail)
+
+            if (newProfilePic && newProfilePic !== currentUserData.userProfilePic) {
+                updates.userProfilePic = newProfilePic
+                if (validData.gravEmail !== currentUserData.gravEmail) {
+                    updates.gravEmail = validData.gravEmail
+                }
+            }
+        } catch (err) {
+            updates.userProfilePic = null
+        }
+    }
+
+    if (Object.keys(updates).length === 0) {
+        console.log('No changes to update.')
+        return
+    }
+
+    await userDocRef.set(updates, { merge: true })
+
+    if (updates.userName) {
+        await userDocRef.update({
+            knownAliases: FieldValue.arrayUnion(updates.userName),
+        })
+    }
+
+    // console.log('User updated:', updates)
 }
 
 async function getUserData(uid) {
