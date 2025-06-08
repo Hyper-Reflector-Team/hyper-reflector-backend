@@ -1,6 +1,6 @@
 const express = require('express')
 const app = express()
-const port = 8082
+const port = 8080
 // firebase
 const { initializeApp, cert } = require('firebase-admin/app')
 const { getAuth } = require('firebase-admin/auth')
