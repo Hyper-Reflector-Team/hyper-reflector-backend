@@ -311,73 +311,10 @@ wss.on('connection', (ws, req) => {
             broadCastUserMessage(data)
         }
 
-        if (data.type === 'callUser') {
-            const { callerId, calleeId, localDescription } = data.data
-            //console.log(connectedUsers)
-            // console.log('data - ', data)
-            // console.log('socket recieved request to call from - ', callerId, ' to ', calleeId)
-            if (connectedUsers.has(calleeId)) {
-                console.log('sending a call off to user', calleeId)
-                // get the user we are calling from the user list
-                const callee = connectedUsers.get(calleeId)
-                callee.ws.send(
-                    JSON.stringify({ type: 'incomingCall', callerId, offer: localDescription })
-                ) // local description is the offer
-            } else {
-                ws.send(JSON.stringify({ type: 'error', message: 'user not online' }))
-            }
-        }
-
-        // handle user answer call
-        if (data.type === 'answerCall') {
-            console.log('socket call request was answered')
-            const { callerId, answer, answererId } = data.data
-            if (connectedUsers.has(callerId)) {
-                // if caller exists we get them by id from user list
-                const caller = connectedUsers.get(callerId)
-                caller.ws.send(
-                    JSON.stringify({ type: 'callAnswered', callerId, answer, answererId })
-                )
-            }
-        }
-
-        //handle decline a call
-        if (data.type === 'declineCall') {
-            console.log('socket call request was decline')
-            const { callerId, answererId } = data.data
-            if (connectedUsers.has(callerId)) {
-                // if caller exists we get them by id from user list
-                const caller = connectedUsers.get(callerId)
-                caller.ws.send(JSON.stringify({ type: 'callDeclined', callerId, answererId }))
-            }
-        }
-
-        // handle ice candidate exchanging
-        if (data.type === 'iceCandidate') {
-            const { fromUID, toUID, candidate } = data.data
-            console.log('we got an ice candidate', toUID, candidate)
-            if (connectedUsers.has(toUID)) {
-                const targetUser = connectedUsers.get(toUID)
-                targetUser.ws.send(JSON.stringify({ type: 'iceCandidate', candidate, fromUID }))
-            }
-        }
-
-        if (data.type === 'sendStunOverSocket') {
-            const { opponentId } = data
-            if (connectedUsers.has(opponentId)) {
-                const targetUser = connectedUsers.get(opponentId)
-                targetUser.ws.send(
-                    JSON.stringify({ type: 'receiveHolePunchStun', data: data.data })
-                )
-            }
-        }
-
         // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
         if (data.type === 'matchEnd') {
             disconnectUserFromUsers(data.userUID)
         }
-
-        // ping manager stuff
 
         if (data.type === 'webrtc-ping-offer') {
             const { to, from, offer } = data
@@ -397,6 +334,18 @@ wss.on('connection', (ws, req) => {
             if (connectedUsers.has(to)) {
                 const targetUser = connectedUsers.get(to)
                 targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
+            }
+        }
+
+        //handle decline a call
+        if (data.type === 'webrtc-ping-decline') {
+            const { to, from, answer } = data
+            console.log('we are sending an asnwer', data)
+            if (to === from) return
+            console.log('sending answer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-decline', answer, from }))
             }
         }
 
