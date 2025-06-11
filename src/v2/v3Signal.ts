@@ -252,7 +252,31 @@ wss.on('connection', (ws, req) => {
             }
 
             connectedUsers.set(updateData.uid, { ws, ...updatedUser })
-            console.log('Updated user:', connectedUsers.get(updateData.uid))
+
+            // update and broadcast to lobby
+            for (const [lobbyId, usersInLobby] of lobbies.entries()) {
+                if (usersInLobby.has(updateData.uid)) {
+                    for (const [peerId, peer] of usersInLobby.entries()) {
+                        if (
+                            peerId !== updateData.uid &&
+                            peer.ws &&
+                            peer.ws.readyState === WebSocket.OPEN
+                        ) {
+                            peer.ws.send(
+                                JSON.stringify({
+                                    type: 'user-state-updated',
+                                    data: {
+                                        uid: updateData.uid,
+                                        key: updateData.stateToUpdate.key,
+                                        value: updateData.stateToUpdate.value,
+                                    },
+                                })
+                            )
+                        }
+                    }
+                    break // Found the lobby, no need to keep looping
+                }
+            }
         }
 
         if (data.type === 'createLobby') {
