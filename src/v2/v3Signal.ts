@@ -236,6 +236,15 @@ wss.on('connection', (ws, req) => {
             )
         }
 
+        if (data.type === 'updateSocketState') {
+            const userToUpdate = connectedUsers.get(data.uid)
+            const updatedUser = {
+                ...userToUpdate,
+                ...data.stateToUpdate,
+            }
+            connectedUsers.set(data.uid, { ws, ...updatedUser })
+        }
+
         if (data.type === 'createLobby') {
             const { lobbyId, pass, user, private } = data
 
