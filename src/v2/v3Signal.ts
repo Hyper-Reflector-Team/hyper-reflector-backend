@@ -240,6 +240,7 @@ wss.on('connection', (ws, req) => {
             console.log('user updating state', data)
             const { data: updateData } = data
             const userToUpdate = connectedUsers.get(updateData.uid)
+            console.log(userToUpdate)
 
             if (!userToUpdate) {
                 console.warn(`No user found for UID ${updateData.uid}`)
@@ -253,30 +254,46 @@ wss.on('connection', (ws, req) => {
 
             connectedUsers.set(updateData.uid, { ws, ...updatedUser })
 
+            const lobby = lobbies.get(userToUpdate.lobbyId)
+            if (!lobby) return
+
+            console.log(lobby)
+
+            // const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
+
+            // for (const user of lobby.values()) {
+            //     user.ws.send(
+            //         JSON.stringify({
+            //             type: 'connected-users',
+            //             users,
+            //             count: users.length,
+            //         })
+            //     )
+            // }
             // update and broadcast to lobby
-            for (const [lobbyId, usersInLobby] of lobbies.entries()) {
-                if (usersInLobby.has(updateData.uid)) {
-                    for (const [peerId, peer] of usersInLobby.entries()) {
-                        if (
-                            peerId !== updateData.uid &&
-                            peer.ws &&
-                            peer.ws.readyState === WebSocket.OPEN
-                        ) {
-                            peer.ws.send(
-                                JSON.stringify({
-                                    type: 'user-state-updated',
-                                    data: {
-                                        uid: updateData.uid,
-                                        key: updateData.stateToUpdate.key,
-                                        value: updateData.stateToUpdate.value,
-                                    },
-                                })
-                            )
-                        }
-                    }
-                    break // Found the lobby, no need to keep looping
-                }
-            }
+            // for (const [lobbyId, usersInLobby] of lobbies.entries()) {
+            //     if (usersInLobby.has(updateData.uid)) {
+            //         for (const [peerId, peer] of usersInLobby.entries()) {
+            //             if (
+            //                 peerId !== updateData.uid &&
+            //                 peer.ws &&
+            //                 peer.ws.readyState === WebSocket.OPEN
+            //             ) {
+            //                 peer.ws.send(
+            //                     JSON.stringify({
+            //                         type: 'user-state-updated',
+            //                         data: {
+            //                             uid: updateData.uid,
+            //                             key: updateData.stateToUpdate.key,
+            //                             value: updateData.stateToUpdate.value,
+            //                         },
+            //                     })
+            //                 )
+            //             }
+            //         }
+            //         break // Found the lobby, no need to keep looping
+            //     }
+            // }
         }
 
         if (data.type === 'createLobby') {
