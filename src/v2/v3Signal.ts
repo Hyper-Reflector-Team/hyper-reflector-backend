@@ -238,20 +238,21 @@ wss.on('connection', (ws, req) => {
 
         if (data.type === 'updateSocketState') {
             console.log('user updating state', data)
-            const userToUpdate = connectedUsers.get(data.uid)
+            const { data: updateData } = data
+            const userToUpdate = connectedUsers.get(updateData.uid)
 
             if (!userToUpdate) {
-                console.warn(`No user found for UID ${data.uid}`)
+                console.warn(`No user found for UID ${updateData.uid}`)
                 return
             }
 
             const updatedUser = {
                 ...userToUpdate,
-                [data.stateToUpdate.key]: data.stateToUpdate.value,
+                [updateData.stateToUpdate.key]: updateData.stateToUpdate.value,
             }
 
-            connectedUsers.set(data.uid, { ws, ...updatedUser })
-            console.log('Updated user:', connectedUsers.get(data.uid))
+            connectedUsers.set(updateData.uid, { ws, ...updatedUser })
+            console.log('Updated user:', connectedUsers.get(updateData.uid))
         }
 
         if (data.type === 'createLobby') {
