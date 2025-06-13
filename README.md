@@ -12,6 +12,7 @@ You'll need to create a keys folder in the working directory and two additional 
 const COTURN_IP = SERVER_IP_STRING // this is the server IP, i suggest running this locally or on a cloud server
 const COTURN_PORT = SERVER_PORT  // this is the server port
 const API_PORT = API_PORT -- this is the express servers port
+const SERVER_SECRET = 'some-secret-code-for-server-only-requests'
 
 module.exports = { COTURN_IP, COTURN_PORT, API_PORT }
 

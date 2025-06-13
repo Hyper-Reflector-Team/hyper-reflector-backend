@@ -4,23 +4,217 @@
 const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
+const geoip = require('fast-geoip')
+const geolib = require('geolib')
 
 const wss = new WebSocket.Server({ port: 3003 })
-
 const connectedUsers = new Map()
 const lobbies = new Map()
 const lobbyTimeouts = new Map()
 const lobbyMeta = new Map() // keep track of lobby metadata like password
 
-wss.on('connection', (ws) => {
+// function findBestPeer(userId) {
+//     const user = connectedUsers[userId]
+//     let bestPeer = null
+//     let lowestPing = Infinity
+
+//     for (const [peerId, peer] of Object.entries(connectedUsers)) {
+//       if (peerId === userId) continue
+//       const ping = user.lastKnownPings[peerId] || estimatePing(user.geo, peer.geo)
+//       if (ping < lowestPing) {
+//         bestPeer = peerId
+//         lowestPing = ping
+//       }
+//     }
+
+//     return bestPeer
+//   }
+
+async function handleEstimatePing(data, ws) {
+    const { data: userData } = data
+    if (!userData.userA || !userData.userB) return
+
+    const userAResponse = await axios.post(
+        `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/get-user-server`,
+        { userUID: userData.userA.id },
+        {
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+            },
+        }
+    )
+
+    const userA = userAResponse.data
+    const userB = connectedUsers.get(userData.userB.id)?.userData
+    if (!userA?.pingLat || !userB?.pingLat) return
+
+    let distance = 1
+    try {
+        distance = geolib.getDistance(
+            { latitude: userA.pingLat, longitude: userA.pingLon },
+            { latitude: userB.pingLat, longitude: userB.pingLon }
+        )
+    } catch (error) {
+        console.error('geolib error:', error)
+    }
+
+    const estimatedRTT = Math.round(distance / 1000 / 200 + 20)
+    const existingPings = Array.isArray(userA.lastKnownPings) ? userA.lastKnownPings : []
+    const filteredPings = existingPings.filter((p) => p.id !== userData.userB.id)
+    const updatedPings = [
+        ...filteredPings,
+        {
+            id: userData.userB.id,
+            ping: `${estimatedRTT}`,
+            isUnstable: userData.userB.stability,
+        },
+    ]
+
+    const body = {
+        userData: {
+            lastKnownPings: updatedPings,
+        },
+        uid: userData.userA.id,
+    }
+
+    try {
+        await axios.post(
+            `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-ping`,
+            body,
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                },
+            }
+        )
+    } catch (err) {
+        console.error('Failed to update user ping:', err)
+        return
+    }
+
+    if (ws.uid === userData.userA.id) {
+        ws.send(JSON.stringify({ type: 'update-user-pinged', data: body.userData }))
+    }
+}
+
+function getPeerPingsForUser(sourceUser) {
+    const results = []
+
+    for (const [id, targetUser] of connectedUsers.entries()) {
+        if (id === sourceUser.uid) continue
+
+        if (
+            !targetUser.pingLat ||
+            !targetUser.pingLon ||
+            !sourceUser.pingLat ||
+            !sourceUser.pingLon
+        ) {
+            continue
+        }
+
+        const distance = geolib.getDistance(
+            { latitude: sourceUser.pingLat, longitude: sourceUser.pingLon },
+            { latitude: targetUser.pingLat, longitude: targetUser.pingLon }
+        )
+
+        const distanceKm = distance / 1000
+        const estimatedRTT = Math.round(distanceKm / 200 + 20)
+
+        results.push({
+            id: targetUser.uid,
+            ping: estimatedRTT,
+            isUnstable: targetUser.stability ?? false,
+            countryCode: targetUser.countryCode ?? 'xx',
+        })
+    }
+
+    return results
+}
+
+async function getGeoLocation(req, user, ws) {
+    const ip = req?.socket?.remoteAddress?.split('::ffff:')[1] || '127.0.0.1'
+    if (!ip) {
+        console.log('failed to get ip string')
+        return
+    }
+    const geo = await geoip.lookup(ip)
+    const userGeoData = {
+        pingLat: geo.ll[0],
+        pingLon: geo.ll[1],
+        countryCode: geo.country || 'xx',
+    }
+    const body = {
+        userData: userGeoData,
+        uid: user.uid,
+    }
+
+    try {
+        await axios.post(
+            `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-ping`,
+            body,
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                },
+            }
+        )
+    } catch (error) {
+        console.error('Geo update failed:', error)
+    }
+
+    const updatedUser = {
+        ...user,
+        ...userGeoData,
+    }
+    connectedUsers.set(user.uid, { ws, ...updatedUser })
+
+    const peerPings = getPeerPingsForUser(updatedUser)
+
+    if (ws.uid === user.uid) {
+        ws.send(
+            JSON.stringify({
+                type: 'update-user-pinged',
+                data: { ...userGeoData, lastKnownPings: peerPings },
+            })
+        )
+        // send ping out to every other user
+        for (const peer of peerPings) {
+            const peerConn = connectedUsers.get(peer.id)
+            if (!peerConn || !peerConn.ws) continue
+
+            const reversePing = {
+                isNewPing: true, // we use this to sift on the front end and make the update.
+                id: updatedUser.uid,
+                ping: peer.ping,
+                countryCode: updatedUser.countryCode || 'xx',
+                isUnstable: updatedUser.stability ?? false,
+            }
+
+            peerConn.ws.send(
+                JSON.stringify({
+                    type: 'update-user-pinged',
+                    data: reversePing,
+                })
+            )
+        }
+    }
+}
+
+wss.on('connection', (ws, req) => {
     let user
 
-    ws.on('message', (message) => {
+    // get the geo location based on websocket ip
+
+    ws.on('message', async (message) => {
         const data = JSON.parse(message)
 
         if (data.type === 'join') {
             user = data.user
-            // console.log(user)
+            ws.uid = user.uid
+            getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
@@ -40,6 +234,66 @@ wss.on('connection', (ws) => {
                     users: [...connectedUsers.values()].map(({ ws, ...user }) => user),
                 })
             )
+        }
+
+        if (data.type === 'updateSocketState') {
+            console.log('user updating state', data)
+            const { data: updateData } = data
+            const userToUpdate = connectedUsers.get(updateData.uid)
+            console.log(userToUpdate)
+
+            if (!userToUpdate) {
+                console.warn(`No user found for UID ${updateData.uid}`)
+                return
+            }
+
+            const updatedUser = {
+                ...userToUpdate,
+                [updateData.stateToUpdate.key]: updateData.stateToUpdate.value,
+            }
+
+            connectedUsers.set(updateData.uid, { ws, ...updatedUser })
+
+            const lobby = lobbies.get(userToUpdate.lobbyId)
+            if (!lobby) return
+
+            console.log(lobby)
+
+            // const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
+
+            // for (const user of lobby.values()) {
+            //     user.ws.send(
+            //         JSON.stringify({
+            //             type: 'connected-users',
+            //             users,
+            //             count: users.length,
+            //         })
+            //     )
+            // }
+            // update and broadcast to lobby
+            // for (const [lobbyId, usersInLobby] of lobbies.entries()) {
+            //     if (usersInLobby.has(updateData.uid)) {
+            //         for (const [peerId, peer] of usersInLobby.entries()) {
+            //             if (
+            //                 peerId !== updateData.uid &&
+            //                 peer.ws &&
+            //                 peer.ws.readyState === WebSocket.OPEN
+            //             ) {
+            //                 peer.ws.send(
+            //                     JSON.stringify({
+            //                         type: 'user-state-updated',
+            //                         data: {
+            //                             uid: updateData.uid,
+            //                             key: updateData.stateToUpdate.key,
+            //                             value: updateData.stateToUpdate.value,
+            //                         },
+            //                     })
+            //                 )
+            //             }
+            //         }
+            //         break // Found the lobby, no need to keep looping
+            //     }
+            // }
         }
 
         if (data.type === 'createLobby') {
@@ -83,7 +337,6 @@ wss.on('connection', (ws) => {
 
             const meta = lobbyMeta.get(newLobbyId)
             if (meta && meta.pass !== pass) {
-                console.log('failed pass check', meta.pass, pass)
                 ws.send(
                     JSON.stringify({
                         type: 'error',
@@ -94,8 +347,6 @@ wss.on('connection', (ws) => {
             }
 
             if (!user) return
-
-            console.log('changing lobby bp 1')
             removeUserFromAllLobbies(user.uid)
 
             // make sure we clear timeouts when we start the new lobby
@@ -104,15 +355,12 @@ wss.on('connection', (ws) => {
                 lobbyTimeouts.delete(newLobbyId)
             }
 
-            console.log('changing lobby bp 2')
             if (!lobbies.has(newLobbyId)) {
                 lobbies.set(newLobbyId, new Map())
             }
-            console.log('changing lobby bp 3')
             lobbies.get(newLobbyId).set(user.uid, { ...user, ws })
             broadcastUserList(newLobbyId)
             broadcastLobbyUserCounts()
-            console.log('changing lobby bp 4')
         }
 
         if (data.type === 'userDisconnect') {
@@ -123,79 +371,65 @@ wss.on('connection', (ws) => {
             broadCastUserMessage(data)
         }
 
-        if (data.type === 'callUser') {
-            const { callerId, calleeId, localDescription } = data.data
-            //console.log(connectedUsers)
-            console.log('data - ', data)
-            console.log('socket recieved request to call from - ', callerId, ' to ', calleeId)
-            if (connectedUsers.has(calleeId)) {
-                console.log('sending a call off to user', calleeId)
-                // get the user we are calling from the user list
-                const callee = connectedUsers.get(calleeId)
-                callee.ws.send(
-                    JSON.stringify({ type: 'incomingCall', callerId, offer: localDescription })
-                ) // local description is the offer
-            } else {
-                ws.send(JSON.stringify({ type: 'error', message: 'user not online' }))
+        // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
+        if (data.type === 'matchEnd') {
+            disconnectUserFromUsers(data.userUID)
+        }
+
+        if (data.type === 'webrtc-ping-offer') {
+            const { to, from, offer } = data
+            if (to === from) return
+            console.log('sending offer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-offer', offer, from }))
             }
         }
 
-        // handle user answer call
-        if (data.type === 'answerCall') {
-            console.log('socket call request was answered')
-            const { callerId, answer, answererId } = data.data
-            if (connectedUsers.has(callerId)) {
-                // if caller exists we get them by id from user list
-                const caller = connectedUsers.get(callerId)
-                caller.ws.send(
-                    JSON.stringify({ type: 'callAnswered', callerId, answer, answererId })
-                )
+        if (data.type === 'webrtc-ping-answer') {
+            const { to, from, answer } = data
+            console.log('we are sending an answer message', data)
+            if (to === from) return
+            console.log('sending answer', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
             }
         }
 
         //handle decline a call
-        if (data.type === 'declineCall') {
-            console.log('socket call request was decline')
-            const { callerId, answererId } = data.data
-            if (connectedUsers.has(callerId)) {
-                // if caller exists we get them by id from user list
-                const caller = connectedUsers.get(callerId)
-                caller.ws.send(JSON.stringify({ type: 'callDeclined', callerId, answererId }))
+        if (data.type === 'webrtc-ping-decline') {
+            const { to, from } = data
+            console.log('we are sending a decline message', data)
+            if (to === from) return
+            console.log('sending decline', to)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-decline', from }))
             }
         }
 
-        // handle ice candidate exchanging
-        if (data.type === 'iceCandidate') {
-            const { fromUID, toUID, candidate } = data.data
-            console.log('we got an ice candidate', toUID, candidate)
-            if (connectedUsers.has(toUID)) {
-                const targetUser = connectedUsers.get(toUID)
-                targetUser.ws.send(JSON.stringify({ type: 'iceCandidate', candidate, fromUID }))
-            }
-        }
-
-        if (data.type === 'sendStunOverSocket') {
-            const { opponentId } = data
-            console.log('send stun over socket: ', data)
-            console.log(connectedUsers)
-            if (connectedUsers.has(opponentId)) {
-                console.log('user found, sending data')
-                const targetUser = connectedUsers.get(opponentId)
+        if (data.type === 'webrtc-ping-candidate') {
+            const { to, from, candidate } = data
+            if (to === from) return
+            // console.log('we got an ice candidate', to, candidate)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
                 targetUser.ws.send(
-                    JSON.stringify({ type: 'receiveHolePunchStun', data: data.data })
+                    JSON.stringify({ type: 'webrtc-ping-candidate', candidate, from })
                 )
             }
         }
 
-        // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
-        if (data.type === 'matchEnd') {
-            disconnectUserFromUsers(data.userUID)
+        // ping gathering
+        if (data.type === 'estimate-ping-users') {
+            console.log('users trying to ping eachother')
+            handleEstimatePing(data, ws)
         }
     })
 
     //handle close socket
     ws.on('close', async () => {
-        console.log('user disconnected', user.email)
         connectedUsers.delete(user.uid)
         removeUserFromAllLobbies(user.uid)
         const body = JSON.stringify({
@@ -277,7 +511,6 @@ function broadcastLobbyUserCounts() {
 
     for (const [lobbyId, users] of lobbies.entries()) {
         const meta = lobbyMeta.get(lobbyId)
-        console.log('lobby meta data', meta)
         updates.push({
             name: lobbyId,
             users: users.size,
@@ -354,4 +587,4 @@ function broadcastLobbyRemoved(lobbyId) {
     })
 }
 
-console.log('WebSocket signaling server running on port 3001...')
+console.log('WebSocket signaling server running on port 3003...')

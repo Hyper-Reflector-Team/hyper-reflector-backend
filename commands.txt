@@ -15,6 +15,24 @@ systemctl status coturn -- check status
 to modify the configs for the turn server
 nano /etc/turnserver.conf 
 
+-- Testing the turn server remotely
+```const pc = new RTCPeerConnection({
+  iceServers: [
+    {
+      urls: 'turn:your.turn.server:3478',
+      username: 'turn',
+      credential: 'turn'
+    }
+  ]
+});
+pc.createDataChannel("test");
+pc.createOffer().then(o => pc.setLocalDescription(o));
+pc.onicecandidate = e => {
+  if (!e.candidate) {
+    console.log('ICE gathering complete');
+    console.log(pc.localDescription.sdp);
+  }
+};```
 
 notes:
 we should only run the backend services ie signal server from a user like (runner)
