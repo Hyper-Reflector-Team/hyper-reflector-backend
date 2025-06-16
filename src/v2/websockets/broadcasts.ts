@@ -1,4 +1,5 @@
-import { connectedUsers, lobbies, lobbyTimeouts, lobbyMeta } from './maps'
+// Used for maintaining websocket functions that call all users, or all users in a lobby.
+import { lobbies, lobbyTimeouts, lobbyMeta } from './maps'
 
 export function getLobbyUsers(lobbyId) {
     const lobby = lobbies.get(lobbyId)
@@ -70,6 +71,8 @@ export function broadcastUserList(lobbyId) {
     const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
 
     for (const user of lobby.values()) {
+        console.log('sending users', users)
+        if (!user.ws) return
         user.ws.send(
             JSON.stringify({
                 type: 'connected-users',
@@ -82,6 +85,7 @@ export function broadcastUserList(lobbyId) {
 
 // if the lobby is empty close it after 30 seconds.
 export function removeUserFromAllLobbies(uid, wss) {
+    if (!wss) return
     for (const [lobbyId, users] of lobbies.entries()) {
         if (users.has(uid)) {
             users.delete(uid)
@@ -131,4 +135,12 @@ export function broadcastKillPeer(userUID, wss) {
             )
         }
     })
+}
+
+export async function updateLobbyData(updateData) {
+    const lobby = await lobbies.get(updateData.lobbyId)
+    const userData = lobby.get(updateData.uid)
+    const toUpdate = updateData.stateToUpdate
+    await lobby.set(updateData.uid, { ...userData, ...{ [toUpdate.key]: toUpdate.value } })
+    broadcastUserList(updateData.lobbyId)
 }

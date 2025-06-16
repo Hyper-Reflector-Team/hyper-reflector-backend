@@ -3,13 +3,13 @@
 import { getGeoLocation, handleEstimatePing } from './websockets/ping'
 import { connectedUsers, lobbies, lobbyTimeouts, lobbyMeta } from './websockets/maps'
 import {
-    getLobbyUsers,
     broadCastUserMessage,
     disconnectUserFromUsers,
     broadcastLobbyUserCounts,
     broadcastUserList,
     removeUserFromAllLobbies,
     broadcastKillPeer,
+    updateLobbyData,
 } from './websockets/broadcasts'
 const WebSocket = require('ws')
 const axios = require('axios')
@@ -49,10 +49,8 @@ wss.on('connection', (ws, req) => {
         }
 
         if (data.type === 'updateSocketState') {
-            console.log('user updating state', data)
             const { data: updateData } = data
             const userToUpdate = connectedUsers.get(updateData.uid)
-            console.log(userToUpdate)
 
             if (!userToUpdate) {
                 console.warn(`No user found for UID ${updateData.uid}`)
@@ -65,50 +63,7 @@ wss.on('connection', (ws, req) => {
             }
 
             connectedUsers.set(updateData.uid, { ws, ...updatedUser })
-
-            const lobby = lobbies.get(userToUpdate.lobbyId)
-            if (!lobby) return
-
-            console.log(lobby)
-
-            // lobbies.get(defaultLobbyId).set(user.uid, { ...user, ws })
-            // broadcastUserList(defaultLobbyId)
-
-            // const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
-
-            // for (const user of lobby.values()) {
-            //     user.ws.send(
-            //         JSON.stringify({
-            //             type: 'connected-users',
-            //             users,
-            //             count: users.length,
-            //         })
-            //     )
-            // }
-            // update and broadcast to lobby
-            // for (const [lobbyId, usersInLobby] of lobbies.entries()) {
-            //     if (usersInLobby.has(updateData.uid)) {
-            //         for (const [peerId, peer] of usersInLobby.entries()) {
-            //             if (
-            //                 peerId !== updateData.uid &&
-            //                 peer.ws &&
-            //                 peer.ws.readyState === WebSocket.OPEN
-            //             ) {
-            //                 peer.ws.send(
-            //                     JSON.stringify({
-            //                         type: 'user-state-updated',
-            //                         data: {
-            //                             uid: updateData.uid,
-            //                             key: updateData.stateToUpdate.key,
-            //                             value: updateData.stateToUpdate.value,
-            //                         },
-            //                     })
-            //                 )
-            //             }
-            //         }
-            //         break // Found the lobby, no need to keep looping
-            //     }
-            // }
+            updateLobbyData(updateData) // broadcast to all users in the lobby
         }
 
         if (data.type === 'createLobby') {
