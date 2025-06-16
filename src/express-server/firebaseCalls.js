@@ -177,7 +177,8 @@ async function uploadMatchData(matchData, uid) {
     let p2Wins = 0
 
     const matchEntry = {
-        // matchData: matchData.matchData, // this is a temporary fix to prevent massive raw data explosions
+        // TODO fix this
+        matchData: matchData.matchData, // this is a temporary fix to prevent massive raw data explosions
         timestamp: Date.now(),
         player1Char: p1Char || 'unknown',
         player2Char: p2Char || 'unknown',
@@ -255,6 +256,7 @@ async function uploadMatchData(matchData, uid) {
                 totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 winStreak: playerWon ? FieldValue.increment(1) : 0, // if lost, reset streak
+                // send data back to increase streak on websocket end
                 characters: {
                     [`${character}`]: {
                         picks: FieldValue.increment(1),
