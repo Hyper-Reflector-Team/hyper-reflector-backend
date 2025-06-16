@@ -71,7 +71,6 @@ export function broadcastUserList(lobbyId) {
     const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
 
     for (const user of lobby.values()) {
-        console.log('sending users', users)
         if (!user.ws) return
         user.ws.send(
             JSON.stringify({

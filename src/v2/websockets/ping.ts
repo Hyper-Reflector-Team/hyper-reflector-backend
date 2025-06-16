@@ -109,11 +109,13 @@ function getPeerPingsForUser(sourceUser) {
 }
 
 async function getGeoLocation(req, user, ws) {
+    console.log('this is the remote ', req?.socket?.remoteAddress)
     const ip = req?.socket?.remoteAddress?.split('::ffff:')[1] || '127.0.0.1'
     if (!ip) {
         console.log('failed to get ip string')
         return
     }
+    console.log('this is the ip we got', ip)
     const geo = await geoip.lookup(ip)
     const userGeoData = {
         pingLat: geo.ll[0],

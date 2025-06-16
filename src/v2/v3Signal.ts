@@ -149,7 +149,6 @@ wss.on('connection', (ws, req) => {
         if (data.type === 'webrtc-ping-offer') {
             const { to, from, offer } = data
             if (to === from) return
-            console.log('sending offer', to)
             if (connectedUsers.has(to)) {
                 const targetUser = connectedUsers.get(to)
                 targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-offer', offer, from }))
@@ -158,9 +157,7 @@ wss.on('connection', (ws, req) => {
 
         if (data.type === 'webrtc-ping-answer') {
             const { to, from, answer } = data
-            console.log('we are sending an answer message', data)
             if (to === from) return
-            console.log('sending answer', to)
             if (connectedUsers.has(to)) {
                 const targetUser = connectedUsers.get(to)
                 targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
@@ -170,9 +167,7 @@ wss.on('connection', (ws, req) => {
         //handle decline a call
         if (data.type === 'webrtc-ping-decline') {
             const { to, from } = data
-            console.log('we are sending a decline message', data)
             if (to === from) return
-            console.log('sending decline', to)
             if (connectedUsers.has(to)) {
                 const targetUser = connectedUsers.get(to)
                 targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-decline', from }))
