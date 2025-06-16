@@ -97,7 +97,6 @@ app.post('/update-user-ping', async (req, res) => {
     const token = authHeader && authHeader.split(' ')[1]
 
     if (token !== serverInfo.SERVER_SECRET) {
-        console.log('no access')
         return res.status(403).send('Forbidden')
     }
 

@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "v2Express": "node src/express-server/v2Express.js",
-    "v3Signal": "node src/v2/v3Signal.ts",
+    "v3Signal": "npx ts-node src/v2/v3Signal.ts",
     "v2Punch": "node src/v2/v2Holepuncher.ts"
   },
   "author": "",
@@ -22,13 +22,13 @@
     "firebase-admin": "^13.0.2",
     "geolib": "^3.3.4",
     "gravatar.js": "^2.0.0",
-    "ts-node": "^10.9.2",
-    "typescript": "~4.5.4",
     "uuid": "^11.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "prettier": "^3.5.0",
-    "save": "^2.9.0"
+    "save": "^2.9.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
   }
 }
