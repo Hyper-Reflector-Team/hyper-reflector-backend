@@ -177,7 +177,7 @@ async function uploadMatchData(matchData, uid) {
     let p2Wins = 0
 
     const matchEntry = {
-        matchData: matchData.matchData,
+        // matchData: matchData.matchData, // this is a temporary fix to prevent massive raw data explosions
         timestamp: Date.now(),
         player1Char: p1Char || 'unknown',
         player2Char: p2Char || 'unknown',
