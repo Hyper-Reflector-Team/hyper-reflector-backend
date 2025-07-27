@@ -28,7 +28,7 @@ wss.on('connection', (ws, req) => {
             ws.uid = user.uid
             // Get user geo location modifies the current connected user Data
             const ip = req.socket.remoteAddress
-            console.log(ip)
+            console.log('this is the ip from original req', ip)
             getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {
