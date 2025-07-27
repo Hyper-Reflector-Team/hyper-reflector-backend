@@ -11,11 +11,28 @@ import {
     broadcastKillPeer,
     updateLobbyData,
 } from './websockets/broadcasts'
+const http = require('http')
 const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
 
-const wss = new WebSocket.Server({ port: 3003 })
+const server = http.createServer()
+const wss = new WebSocket.Server({ noServer: true })
+
+server.on('upgrade', (req, socket, head) => {
+    const ip = extractClientIp(req)
+    console.log('IP during upgrade:', ip)
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+        // You pass req through so it's available in your ws.on('connection')
+        wss.emit('connection', ws, req)
+    })
+})
+
+server.listen(3003, () => {
+    console.log('Listening on port 3003')
+})
+
 
 wss.on('connection', (ws, req) => {
     let user
@@ -233,5 +250,3 @@ wss.on('connection', (ws, req) => {
 
 //broadcast user counts every 15 seconds
 setInterval(broadcastLobbyUserCounts, 15000)
-
-console.log('WebSocket signaling server running on port 3004...')
