@@ -110,6 +110,7 @@ function getPeerPingsForUser(sourceUser) {
 
 // TODO test this code on vps
 function extractClientIp(req) {
+    console.log(req.socket)
     const forwarded = req.headers['x-forwarded-for']
     if (forwarded) return forwarded.split(',')[0].trim()
 
