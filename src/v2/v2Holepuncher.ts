@@ -1,8 +1,11 @@
 var dgram = require('dgram')
+const { performance } = require('perf_hooks')
 const { v4: uuidv4 } = require('uuid')
 
+const HOLE_PUNCH_SERVER_PORT = 33334
 var socket = dgram.createSocket('udp4')
-socket.bind(33334)
+
+socket.bind(HOLE_PUNCH_SERVER_PORT)
 
 // Store users by their unique Firebase UID
 var users = {}
@@ -49,12 +52,14 @@ socket.on('message', function (message, remote) {
     }
 })
 
+
 function sendPublicDataToClients(uid1, uid2) {
     let user1 = users[uid1]
     let user2 = users[uid2]
 
     if (user1 && user2) {
         const matchId = uuidv4() // Generate unique match ID
+        const start = performance.now()
 
         let messageForUser1 = Buffer.from(
             JSON.stringify({
@@ -62,7 +67,18 @@ function sendPublicDataToClients(uid1, uid2) {
                 matchId,
             })
         )
-        // let messageForUser1 = Buffer.from(JSON.stringify(user2))
+
+        // Track how many sends have completed
+        let sendsCompleted = 0
+
+        function checkDone() {
+            sendsCompleted++
+            if (sendsCompleted === 2) {
+                const duration = performance.now() - start
+                console.log(`Sent both endpoints in ${duration.toFixed(2)} ms`)
+            }
+        }
+
         socket.send(
             messageForUser1,
             0,
@@ -72,6 +88,7 @@ function sendPublicDataToClients(uid1, uid2) {
             function (err) {
                 if (err) return console.log(err)
                 console.log(`> Public endpoint of ${uid2} sent to ${uid1}`)
+                checkDone()
             }
         )
 
@@ -82,7 +99,6 @@ function sendPublicDataToClients(uid1, uid2) {
             })
         )
 
-        // let messageForUser2 = Buffer.from(JSON.stringify(user1))
         socket.send(
             messageForUser2,
             0,
@@ -92,6 +108,7 @@ function sendPublicDataToClients(uid1, uid2) {
             function (err) {
                 if (err) return console.log(err)
                 console.log(`> Public endpoint of ${uid1} sent to ${uid2}`)
+                checkDone()
             }
         )
     }
