@@ -116,6 +116,7 @@ function extractClientIp(req) {
     const ip =
         req.headers['x-real-ip'] ||
         req.socket?.remoteAddress ||
+        req.socket.remoteAddress ||
         req.connection?.remoteAddress ||
         ''
     console.log('test ip', ip)
