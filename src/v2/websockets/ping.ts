@@ -127,6 +127,7 @@ function extractClientIp(req) {
 
 async function getGeoLocation(req, user, ws) {
     const ip = extractClientIp(req)
+    console.log('extracted Ip for user', ip)
 
     if (!ip) {
         console.log('failed to get ip string')
