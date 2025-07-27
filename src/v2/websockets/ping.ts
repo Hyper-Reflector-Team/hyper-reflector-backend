@@ -129,6 +129,7 @@ function extractClientIp(req) {
 }
 
 async function getGeoLocation(req, user, ws) {
+    console.log(req, 'this is the req')
     const ip = extractClientIp(req)
     console.log('Extracted IP:', ip)
 
