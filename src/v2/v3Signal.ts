@@ -1,6 +1,6 @@
 // This is the signalling server used by coturn and the front end application to handle handshaking / making inital RTC call
 // This has also been coopted to handle all websocket related stuff on the front end.
-import { getGeoLocation, handleEstimatePing } from './websockets/ping'
+import { getGeoLocation, handleEstimatePing, extractClientIp } from './websockets/ping'
 import { connectedUsers, lobbies, lobbyTimeouts, lobbyMeta } from './websockets/maps'
 import {
     broadCastUserMessage,
@@ -18,22 +18,6 @@ const serverInfo = require('../../keys/server.ts')
 
 const server = http.createServer()
 const wss = new WebSocket.Server({ noServer: true })
-
-function extractClientIp(req) {
-    const forwarded = req.headers['x-forwarded-for']
-    if (forwarded) return forwarded.split(',')[0].trim()
-
-    const ip =
-        req.headers['x-real-ip'] ||
-        req.socket?.remoteAddress ||
-        req.connection?.remoteAddress ||
-        ''
-
-    if (ip.includes('::ffff:')) return ip.split('::ffff:')[1]
-    if (!ip || ip === '::1') return '127.0.0.1'
-
-    return ip
-}
 
 server.on('upgrade', (req, socket, head) => {
     const ip = extractClientIp(req)
@@ -53,23 +37,15 @@ server.listen(3003, () => {
 wss.on('connection', (ws, req) => {
     let user
 
-    const clientIp =
-        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-        req.socket?.remoteAddress ||
-        ws._socket?.remoteAddress ||
-        'unknown'
-
-    console.log('Connected client IP:', clientIp)
-
     ws.on('message', async (message) => {
         const data = JSON.parse(message)
 
         if (data.type === 'join') {
             user = data.user
             ws.uid = user.uid
-            // Get user geo location modifies the current connected user Data
-            const ip = req.socket.remoteAddress
-            console.log('this is the ip from original req', ip)
+
+            const ip = extractClientIp(req)
+            console.log('IP during connection :', ip)
             getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {

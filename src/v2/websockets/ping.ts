@@ -108,7 +108,6 @@ function getPeerPingsForUser(sourceUser) {
     return results
 }
 
-// TODO test this code on vps
 function extractClientIp(req) {
     const forwarded = req.headers['x-forwarded-for']
     if (forwarded) return forwarded.split(',')[0].trim()
@@ -116,15 +115,15 @@ function extractClientIp(req) {
     const ip =
         req.headers['x-real-ip'] ||
         req.socket?.remoteAddress ||
-        req.socket.remoteAddress ||
         req.connection?.remoteAddress ||
         ''
-    console.log('test ip', ip)
+
     if (ip.includes('::ffff:')) return ip.split('::ffff:')[1]
     if (!ip || ip === '::1') return '127.0.0.1'
 
     return ip
 }
+
 
 async function getGeoLocation(req, user, ws) {
     const ip = extractClientIp(req)
@@ -211,4 +210,4 @@ async function getGeoLocation(req, user, ws) {
     }
 }
 
-export { handleEstimatePing, getGeoLocation, getPeerPingsForUser }
+export { handleEstimatePing, getGeoLocation, getPeerPingsForUser, extractClientIp }
