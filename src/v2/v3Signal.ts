@@ -26,6 +26,10 @@ wss.on('connection', (ws, req) => {
         if (data.type === 'join') {
             user = data.user
             ws.uid = user.uid
+            // Get user geo location modifies the current connected user Data
+            const ip = req.socket.remoteAddress
+            console.log(ip)
+            getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
@@ -39,11 +43,7 @@ wss.on('connection', (ws, req) => {
                 broadcastUserList(defaultLobbyId)
             }
 
-            // Get user geo location modifies the current connected user Data
-            console.log('req', req.remoteAddress)
-            console.log('connection', req.connection?.remoteAddress)
-            console.log('ws', ws.socket.remoteAddress)
-            getGeoLocation(req, user, ws)
+
 
             ws.send(
                 JSON.stringify({
