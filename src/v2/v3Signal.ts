@@ -15,7 +15,7 @@ const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
 
-const wss = new WebSocket.Server({ port: 3004 })
+const wss = new WebSocket.Server({ port: 3003 })
 
 wss.on('connection', (ws, req) => {
     let user
