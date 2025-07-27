@@ -44,14 +44,12 @@ wss.on('connection', (ws, req) => {
             user = data.user
             ws.uid = user.uid
 
-            const ip = extractClientIp(req)
-            console.log('IP during connection :', ip)
             getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
 
-                // Optionally, auto-join a default lobby
+                // auto join the default lobby
                 const defaultLobbyId = 'Hyper Reflector'
                 if (!lobbies.has(defaultLobbyId)) {
                     lobbies.set(defaultLobbyId, new Map())
