@@ -20,7 +20,7 @@ const wss = new WebSocket.Server({ port: 3003 })
 wss.on('connection', (ws, req) => {
     let user
 
-    ws.on('message', async (message) => {
+    ws.on('message', async (message, remote) => {
         const data = JSON.parse(message)
 
         if (data.type === 'join') {
@@ -40,7 +40,7 @@ wss.on('connection', (ws, req) => {
             }
 
             // Get user geo location modifies the current connected user Data
-            await getGeoLocation(req, user, ws)
+            await getGeoLocation(req, user, ws, remote)
 
             ws.send(
                 JSON.stringify({
