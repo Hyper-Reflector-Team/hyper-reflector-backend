@@ -111,33 +111,21 @@ function getPeerPingsForUser(sourceUser) {
 // TODO test this code on vps
 function extractClientIp(req) {
     const forwarded = req.headers['x-forwarded-for']
-    console.log('forward', forwarded)
-    if (forwarded) {
-        return forwarded.split(',')[0].trim()
-    }
+    if (forwarded) return forwarded.split(',')[0].trim()
 
-    // const ip = req.socket?.remoteAddress || ''
-    let ip =
-        req.headers['x-forwarded-for']?.split(',')[0].trim() ||
+    const ip =
         req.headers['x-real-ip'] ||
         req.socket?.remoteAddress ||
         req.connection?.remoteAddress ||
-        '';
-    // testing 
-    console.log(req.connection?.remoteAddress, req.socket?.remoteAddress, req.headers['x-real-ip'], req.headers['x-forwarded-for']?.split(',')[0].trim())
-    console.log('before ip 1', ip)
-    if (ip.includes('::ffff:')) {
-        return ip.split('::ffff:')[1]
-    }
-
-    console.log('before ip 2', ip)
-    if (ip === '::1' || ip === '') return '127.0.0.1'
+        ''
+    console.log('test ip', ip)
+    if (ip.includes('::ffff:')) return ip.split('::ffff:')[1]
+    if (!ip || ip === '::1') return '127.0.0.1'
 
     return ip
 }
 
 async function getGeoLocation(req, user, ws) {
-    console.log(req, 'this is the req')
     const ip = extractClientIp(req)
     console.log('Extracted IP:', ip)
 
