@@ -20,6 +20,14 @@ const wss = new WebSocket.Server({ port: 3003 })
 wss.on('connection', (ws, req) => {
     let user
 
+    const clientIp =
+        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        ws._socket?.remoteAddress ||
+        'unknown'
+
+    console.log('Connected client IP:', clientIp)
+
     ws.on('message', async (message) => {
         const data = JSON.parse(message)
 
