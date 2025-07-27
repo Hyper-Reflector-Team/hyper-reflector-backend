@@ -19,6 +19,22 @@ const serverInfo = require('../../keys/server.ts')
 const server = http.createServer()
 const wss = new WebSocket.Server({ noServer: true })
 
+function extractClientIp(req) {
+    const forwarded = req.headers['x-forwarded-for']
+    if (forwarded) return forwarded.split(',')[0].trim()
+
+    const ip =
+        req.headers['x-real-ip'] ||
+        req.socket?.remoteAddress ||
+        req.connection?.remoteAddress ||
+        ''
+
+    if (ip.includes('::ffff:')) return ip.split('::ffff:')[1]
+    if (!ip || ip === '::1') return '127.0.0.1'
+
+    return ip
+}
+
 server.on('upgrade', (req, socket, head) => {
     const ip = extractClientIp(req)
     console.log('IP during upgrade:', ip)
