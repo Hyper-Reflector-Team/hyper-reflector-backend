@@ -40,6 +40,9 @@ wss.on('connection', (ws, req) => {
             }
 
             // Get user geo location modifies the current connected user Data
+            console.log('req', req.socket.remoteAddress)
+            console.log('req', ws._socket.remoteAddress)
+            console.log('req', ws.socket.remoteAddress)
             getGeoLocation(req, user, ws)
 
             ws.send(
