@@ -111,15 +111,18 @@ function getPeerPingsForUser(sourceUser) {
 // TODO test this code on vps
 function extractClientIp(req) {
     const forwarded = req.headers['x-forwarded-for']
+    console.log('forward', forwarded)
     if (forwarded) {
         return forwarded.split(',')[0].trim()
     }
 
     const ip = req.socket?.remoteAddress || ''
+    console.log('before ip 1', ip)
     if (ip.includes('::ffff:')) {
         return ip.split('::ffff:')[1]
     }
 
+    console.log('before ip 2', ip)
     if (ip === '::1' || ip === '') return '127.0.0.1'
 
     return ip
