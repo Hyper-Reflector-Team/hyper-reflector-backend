@@ -15,7 +15,7 @@ const WebSocket = require('ws')
 const axios = require('axios')
 const serverInfo = require('../../keys/server.ts')
 
-const wss = new WebSocket.Server({ port: 3003 })
+const wss = new WebSocket.Server({ port: 3004 })
 
 wss.on('connection', (ws, req) => {
     let user
@@ -26,7 +26,6 @@ wss.on('connection', (ws, req) => {
         if (data.type === 'join') {
             user = data.user
             ws.uid = user.uid
-            getGeoLocation(req, user, ws)
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
@@ -39,6 +38,9 @@ wss.on('connection', (ws, req) => {
                 lobbies.get(defaultLobbyId).set(user.uid, { ...user, ws })
                 broadcastUserList(defaultLobbyId)
             }
+
+            // Get user geo location modifies the current connected user Data
+            await getGeoLocation(req, user, ws)
 
             ws.send(
                 JSON.stringify({
@@ -63,6 +65,7 @@ wss.on('connection', (ws, req) => {
             }
 
             connectedUsers.set(updateData.uid, { ws, ...updatedUser })
+            console.log('update socket state data', updateData)
             updateLobbyData(updateData) // broadcast to all users in the lobby
         }
 
@@ -220,4 +223,4 @@ wss.on('connection', (ws, req) => {
 //broadcast user counts every 15 seconds
 setInterval(broadcastLobbyUserCounts, 15000)
 
-console.log('WebSocket signaling server running on port 3003...')
+console.log('WebSocket signaling server running on port 3004...')

@@ -108,15 +108,38 @@ function getPeerPingsForUser(sourceUser) {
     return results
 }
 
+// TODO test this code on vps
+function extractClientIp(req) {
+    const forwarded = req.headers['x-forwarded-for']
+    if (forwarded) {
+        return forwarded.split(',')[0].trim()
+    }
+
+    const ip = req.socket?.remoteAddress || ''
+    if (ip.includes('::ffff:')) {
+        return ip.split('::ffff:')[1]
+    }
+
+    if (ip === '::1' || ip === '') return '127.0.0.1'
+
+    return ip
+}
+
 async function getGeoLocation(req, user, ws) {
-    console.log('this is the remote ', req?.socket?.remoteAddress)
-    const ip = req?.socket?.remoteAddress?.split('::ffff:')[1] || '127.0.0.1'
+    const ip = extractClientIp(req)
+    console.log('Extracted IP:', ip)
+
     if (!ip) {
         console.log('failed to get ip string')
         return
     }
-    console.log('this is the ip we got', ip)
+
     const geo = await geoip.lookup(ip)
+    if (!geo) {
+        console.log('Geo lookup failed for IP:', ip)
+        return
+    }
+
     const userGeoData = {
         pingLat: geo.ll[0],
         pingLon: geo.ll[1],
@@ -146,7 +169,13 @@ async function getGeoLocation(req, user, ws) {
         ...user,
         ...userGeoData,
     }
-    connectedUsers.set(user.uid, { ws, ...updatedUser })
+
+    console.log('trying to update user with', updatedUser)
+    try {
+        connectedUsers.set(user.uid, { ws, ...updatedUser })
+    } catch (error) {
+        console.log('failed to set user', error)
+    }
 
     const peerPings = getPeerPingsForUser(updatedUser)
 
