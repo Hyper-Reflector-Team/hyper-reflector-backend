@@ -116,7 +116,15 @@ function extractClientIp(req) {
         return forwarded.split(',')[0].trim()
     }
 
-    const ip = req.socket?.remoteAddress || ''
+    // const ip = req.socket?.remoteAddress || ''
+    let ip =
+        req.headers['x-forwarded-for']?.split(',')[0].trim() ||
+        req.headers['x-real-ip'] ||
+        req.socket?.remoteAddress ||
+        req.connection?.remoteAddress ||
+        '';
+    // testing 
+    console.log(req.connection?.remoteAddress, req.socket?.remoteAddress, req.headers['x-real-ip'], req.headers['x-forwarded-for']?.split(',')[0].trim())
     console.log('before ip 1', ip)
     if (ip.includes('::ffff:')) {
         return ip.split('::ffff:')[1]
