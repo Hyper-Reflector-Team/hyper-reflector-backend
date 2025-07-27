@@ -40,7 +40,7 @@ wss.on('connection', (ws, req) => {
             }
 
             // Get user geo location modifies the current connected user Data
-            await getGeoLocation(req, user, ws)
+            getGeoLocation(req, user, ws)
 
             ws.send(
                 JSON.stringify({
