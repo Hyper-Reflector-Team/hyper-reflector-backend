@@ -1,1 +1,0 @@
-'npm run v3Signal && npm run v2Express && npm run v1GoPunch'
