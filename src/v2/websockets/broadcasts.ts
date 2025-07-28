@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 // Used for maintaining websocket functions that call all users, or all users in a lobby.
 import { lobbies, lobbyTimeouts, lobbyMeta } from './maps'
 

@@ -1,1 +1,0 @@
-'npm run v1GoPunch'
