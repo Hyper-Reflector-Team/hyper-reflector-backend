@@ -30,7 +30,7 @@ type MatchPayload struct {
 	MatchID string `json:"matchId"`
 }
 
-const HOLE_PUNCH_SERVER_PORT int = 33335
+const HOLE_PUNCH_SERVER_PORT int = 33334
 
 var (
 	users = make(map[string]Peer)
