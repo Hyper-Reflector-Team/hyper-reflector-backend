@@ -2,6 +2,7 @@ const { getAuth } = require('firebase-admin/auth')
 const { getFirestore, FieldValue } = require('firebase-admin/firestore')
 const gravatar = require('gravatar.js')
 const dataConverter = require('./data')
+const { calculateNewElo } = require('src/v2/websockets/utils')
 
 // firebase related commands
 const db = getFirestore()
@@ -66,6 +67,7 @@ async function updateUserData(data, token) {
         'userProfilePic',
         'gravEmail',
         'winStreak',
+        'elo',
     ]
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
@@ -162,6 +164,17 @@ async function getUserName(uid) {
     }
 }
 
+//get elo
+async function getUserElo(uid) {
+    if (!uid) return
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+    if (!querySnapshot.empty) {
+        return querySnapshot.docs[0].data().elo || 1200
+    } else {
+        return null
+    }
+}
+
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
     if (uid === !matchData.player1) return
@@ -250,9 +263,12 @@ async function uploadMatchData(matchData, uid) {
         const playerWon = matchResult === whichPlayer ? true : false
         const character = whichPlayer === '1' ? p1Char : p2Char
         const superIndex = whichPlayer === '1' ? parsed['player1-super'] : parsed['player2-super']
+        const player1Elo = await getUserElo(matchData.player1)
+        const player2Elo = await getUserElo(matchData.player2)
         batch.set(
             statsRef,
             {
+                accountElo: calculateNewElo(player1Elo, player2Elo, playerWon),
                 totalGames: FieldValue.increment(1),
                 totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
