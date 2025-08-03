@@ -107,15 +107,9 @@ wss.on('connection', (ws, req) => {
                 ws: userToUpdate.ws,
             });
 
-            // update socket state data { winStreak: 6 } {
-            //     2|sockets  |   lobbyId: 'Hyper Reflector',
-            //     2|sockets  |   uid: 'LcPLpfKXB0ON0UoIP9esWe73UJu2',
-            //     2|sockets  |   stateToUpdate: { key: 'winStreak', value: 1 }
-            //     2|sockets  | }
-
             const newUpdateData = {
                 ...updateData,
-                stateToUpdate: { key: [updateData.stateToUpdate.key], value: updatedUser[updateData.stateToUpdate.key] } // get the new value and set it
+                stateToUpdate: { key: updateData.stateToUpdate.key, value: updatedUser[updateData.stateToUpdate.key] } // get the new value and set it
             }
             console.log('update socket state data', newUpdateData, updateData);
             updateLobbyData(newUpdateData);
