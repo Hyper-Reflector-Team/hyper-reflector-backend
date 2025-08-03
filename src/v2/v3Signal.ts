@@ -86,9 +86,9 @@ wss.on('connection', (ws, req) => {
                 console.log(currentStreak)
 
                 if (updateData.stateToUpdate.value === 1) {
-                    console.log('streak increase')
+                    console.log('streak increase', currentStreak)
                     updatedUser = {
-                        winStreak: currentStreak,
+                        winStreak: currentStreak + 1,
                     };
                 } else {
                     updatedUser = {
