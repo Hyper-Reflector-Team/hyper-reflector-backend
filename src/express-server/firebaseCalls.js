@@ -1,6 +1,8 @@
 const { getAuth } = require('firebase-admin/auth')
-const { getFirestore, FieldValue, updateDoc } = require('firebase-admin/firestore')
+const { getFirestore, FieldValue } = require('firebase-admin/firestore')
+const gravatar = require('gravatar.js')
 const dataConverter = require('./data')
+const { calculateNewElo } = require('./utils')
 
 // firebase related commands
 const db = getFirestore()
@@ -28,7 +30,7 @@ async function fetchLoggedInUser(userEmail) {
 }
 
 async function removeLoggedInUser(userEmail) {
-    if (!userEmail.length) return
+    if (!userEmail?.length) return
     const data = await logInUserRef.doc(userEmail).delete()
     if (data) {
         console.log(data)
@@ -43,7 +45,7 @@ async function createAccount({ name, email }, token) {
         await usersRef.doc(email).set({
             userEmail: email,
             userName: name,
-            profilePicture: null,
+            userProfilePic: null,
             uid: token,
         })
     } else {
@@ -53,25 +55,72 @@ async function createAccount({ name, email }, token) {
 
 async function updateUserData(data, token) {
     if (!token) return
-    const allowedFields = ['userName', 'userTitle', 'knownAliases']
+
+    const allowedFields = [
+        'userName',
+        'userTitle',
+        'knownAliases',
+        'countryCode',
+        'lastKnownPings',
+        'pingLat',
+        'pingLon',
+        'userProfilePic',
+        'gravEmail',
+        'winStreak',
+        'elo',
+    ]
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
         .reduce((obj, key) => ({ ...obj, [key]: data[key] }), {})
 
-    if (Object.keys(validData).length === 0) return null // Prevent empty/bogus updates
+    if (Object.keys(validData).length === 0) return null
 
-    const querySnapshot = await usersRef.where('uid', '==', token).get()
-    if (!querySnapshot.empty) {
-        const userDoc = querySnapshot.docs[0].ref
-        await userDoc.set(validData, { merge: true })
-        if (validData.userName) {
-            await userDoc.update({
-                knownAliases: FieldValue.arrayUnion(validData.userName),
-            })
+    const currentUserSnapshot = await usersRef.where('uid', '==', token).get()
+    if (currentUserSnapshot.empty) return null
+
+    const userDocRef = currentUserSnapshot.docs[0].ref
+    const currentUserData = currentUserSnapshot.docs[0].data()
+
+    const updates = {}
+
+    for (const key of Object.keys(validData)) {
+        const newValue = validData[key]
+        const currentValue = currentUserData[key]
+
+        if (newValue !== currentValue) {
+            updates[key] = newValue
         }
-    } else {
-        return null
     }
+
+    if (validData.gravEmail) {
+        try {
+            const newProfilePic = await gravatar.resolve(validData.gravEmail)
+
+            if (newProfilePic && newProfilePic !== currentUserData.userProfilePic) {
+                updates.userProfilePic = newProfilePic
+                if (validData.gravEmail !== currentUserData.gravEmail) {
+                    updates.gravEmail = validData.gravEmail
+                }
+            }
+        } catch (err) {
+            updates.userProfilePic = null
+        }
+    }
+
+    if (Object.keys(updates).length === 0) {
+        console.log('No changes to update.')
+        return
+    }
+
+    await userDocRef.set(updates, { merge: true })
+
+    if (updates.userName) {
+        await userDocRef.update({
+            knownAliases: FieldValue.arrayUnion(updates.userName),
+        })
+    }
+
+    // console.log('User updated:', updates)
 }
 
 async function getUserData(uid) {
@@ -115,6 +164,17 @@ async function getUserName(uid) {
     }
 }
 
+//get elo
+async function getUserElo(uid) {
+    if (!uid) return
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+    if (!querySnapshot.empty) {
+        return querySnapshot.docs[0].data().accountElo || 1200
+    } else {
+        return null
+    }
+}
+
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
     if (uid === !matchData.player1) return
@@ -131,7 +191,8 @@ async function uploadMatchData(matchData, uid) {
     let p2Wins = 0
 
     const matchEntry = {
-        matchData: matchData.matchData,
+        // TODO fix this
+        matchData: matchData.matchData, // this is a temporary fix to prevent massive raw data explosions
         timestamp: Date.now(),
         player1Char: p1Char || 'unknown',
         player2Char: p2Char || 'unknown',
@@ -176,6 +237,20 @@ async function uploadMatchData(matchData, uid) {
     }
 
     // recent match session meta data for player profile
+    const player1Elo = (await getUserElo(matchData.player1)) || 1200
+    const player2Elo = (await getUserElo(matchData.player2)) || 1200
+
+    const p1Won = matchResult === '1'
+
+    const newP1Elo = calculateNewElo(player1Elo, player2Elo, p1Won)
+    const newP2Elo = calculateNewElo(player2Elo, player1Elo, !p1Won)
+
+    console.log('P1 ELO before:', player1Elo, 'P2 ELO before:', player2Elo)
+    console.log('P1 won?', p1Won, '→ P1 new ELO:', newP1Elo, 'P2 new ELO:', newP2Elo)
+
+    await setUserElo(matchData.player1, newP1Elo)
+    await setUserElo(matchData.player2, newP2Elo)
+
     const batch = db.batch()
     for (const player of [matchData.player1, matchData.player2]) {
         if (!player) continue
@@ -202,13 +277,16 @@ async function uploadMatchData(matchData, uid) {
         const playerWon = matchResult === whichPlayer ? true : false
         const character = whichPlayer === '1' ? p1Char : p2Char
         const superIndex = whichPlayer === '1' ? parsed['player1-super'] : parsed['player2-super']
+        const accountElo = whichPlayer === '1' ? newP1Elo : newP2Elo
         batch.set(
             statsRef,
             {
+                accountElo: accountElo,
                 totalGames: FieldValue.increment(1),
                 totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 winStreak: playerWon ? FieldValue.increment(1) : 0, // if lost, reset streak
+                // send data back to increase streak on websocket end
                 characters: {
                     [`${character}`]: {
                         picks: FieldValue.increment(1),
@@ -353,6 +431,21 @@ async function getUserName(uid) {
     }
 }
 
+// set elo
+async function setUserElo(uid, newElo) {
+    if (!uid) return
+
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+
+    if (!querySnapshot.empty) {
+        const userDoc = querySnapshot.docs[0]
+        await userDoc.ref.update({ accountElo: newElo })
+        return true
+    } else {
+        return false
+    }
+}
+
 async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId = null) {
     if (!uid) return null
 
@@ -397,6 +490,7 @@ module.exports = {
     getPlayerStats,
     uploadMatchData,
     getUserName,
+    getUserElo,
     getCustomToken,
     getUserAccountByAuth,
     getUserData,
