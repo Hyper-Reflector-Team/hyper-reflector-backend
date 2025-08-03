@@ -169,7 +169,7 @@ async function getUserElo(uid) {
     if (!uid) return
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
-        return querySnapshot.docs[0].data().elo || 1200
+        return querySnapshot.docs[0].data().accountElo || 1200
     } else {
         return null
     }
@@ -439,7 +439,7 @@ async function setUserElo(uid, newElo) {
 
     if (!querySnapshot.empty) {
         const userDoc = querySnapshot.docs[0]
-        await userDoc.ref.update({ accountELO: newElo })
+        await userDoc.ref.update({ accountElo: newElo })
         return true
     } else {
         return false
