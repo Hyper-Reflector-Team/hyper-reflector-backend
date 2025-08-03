@@ -115,7 +115,7 @@ wss.on('connection', (ws, req) => {
 
             const newUpdateData = {
                 ...updateData,
-                stateToUpdate: { [updateData.stateToUpdate.key]: updatedUser[updateData.stateToUpdate.key] } // get the new value and set it
+                stateToUpdate: { key: [updateData.stateToUpdate.key], value: updatedUser[updateData.stateToUpdate.key] } // get the new value and set it
             }
             console.log('update socket state data', newUpdateData, updateData);
             updateLobbyData(newUpdateData);
