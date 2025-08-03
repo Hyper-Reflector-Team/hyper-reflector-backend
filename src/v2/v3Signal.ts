@@ -80,17 +80,14 @@ wss.on('connection', (ws, req) => {
 
             let updatedUser;
 
-            // Custom logic only for win streak
             if (updateData.stateToUpdate.key === 'winStreak') {
                 const currentStreak = userToUpdate.winStreak || 0;
 
                 if (updateData.stateToUpdate.value === 1) {
-                    // Win = increment streak
                     updatedUser = {
                         winStreak: currentStreak + 1,
                     };
                 } else {
-                    // Loss = reset streak
                     updatedUser = {
                         winStreak: 0,
                     };
@@ -104,8 +101,11 @@ wss.on('connection', (ws, req) => {
             connectedUsers.set(updateData.uid, {
                 ...userToUpdate,
                 ...updatedUser,
-                ws, // ws last in case it was replaced
+                ws: userToUpdate.ws,
             });
+
+            console.log('update socket state data', updateData);
+            updateLobbyData(updateData);
         }
 
         if (data.type === 'createLobby') {
