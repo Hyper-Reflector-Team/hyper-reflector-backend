@@ -80,6 +80,7 @@ wss.on('connection', (ws, req) => {
 
             let updatedUser;
 
+            // Custom logic only for win streak
             if (updateData.stateToUpdate.key === 'winStreak') {
                 const currentStreak = userToUpdate.winStreak || 0;
 
@@ -103,135 +104,136 @@ wss.on('connection', (ws, req) => {
             connectedUsers.set(updateData.uid, {
                 ...userToUpdate,
                 ...updatedUser,
-                ws,
+                ws, // ws last in case it was replaced
             });
+        }
 
-            if (data.type === 'createLobby') {
-                const { lobbyId, pass, user, isPrivate } = data
+        if (data.type === 'createLobby') {
+            const { lobbyId, pass, user, isPrivate } = data
 
-                if (lobbies.has(lobbyId)) {
-                    ws.send(
-                        JSON.stringify({
-                            type: 'error',
-                            message: 'Lobby already exists',
-                        })
-                    )
-                    return
-                }
-
-                removeUserFromAllLobbies(user.uid, wss)
-
-                lobbies.set(lobbyId, new Map())
-                lobbies.get(lobbyId).set(user.uid, { ...user, ws })
-
-                lobbyMeta.set(lobbyId, { pass, isPrivate })
-
-                if (lobbyTimeouts.has(lobbyId)) {
-                    clearTimeout(lobbyTimeouts.get(lobbyId))
-                    lobbyTimeouts.delete(lobbyId)
-                }
-
-                broadcastUserList(lobbyId)
-
+            if (lobbies.has(lobbyId)) {
                 ws.send(
                     JSON.stringify({
-                        type: 'lobby-joined',
-                        lobbyId,
+                        type: 'error',
+                        message: 'Lobby already exists',
                     })
                 )
-                broadcastLobbyUserCounts(wss)
+                return
             }
 
-            if (data.type === 'changeLobby') {
-                const { newLobbyId, pass, user } = data
+            removeUserFromAllLobbies(user.uid, wss)
 
-                const meta = lobbyMeta.get(newLobbyId)
-                if (meta && meta.pass !== pass) {
-                    ws.send(
-                        JSON.stringify({
-                            type: 'error',
-                            message: 'Invalid password for lobby',
-                        })
-                    )
-                    return
-                }
+            lobbies.set(lobbyId, new Map())
+            lobbies.get(lobbyId).set(user.uid, { ...user, ws })
 
-                if (!user) return
-                removeUserFromAllLobbies(user.uid, wss)
+            lobbyMeta.set(lobbyId, { pass, isPrivate })
 
-                // make sure we clear timeouts when we start the new lobby
-                if (lobbyTimeouts.has(newLobbyId)) {
-                    clearTimeout(lobbyTimeouts.get(newLobbyId))
-                    lobbyTimeouts.delete(newLobbyId)
-                }
-
-                if (!lobbies.has(newLobbyId)) {
-                    lobbies.set(newLobbyId, new Map())
-                }
-                lobbies.get(newLobbyId).set(user.uid, { ...user, ws })
-                broadcastUserList(newLobbyId)
-                broadcastLobbyUserCounts(wss)
+            if (lobbyTimeouts.has(lobbyId)) {
+                clearTimeout(lobbyTimeouts.get(lobbyId))
+                lobbyTimeouts.delete(lobbyId)
             }
 
-            if (data.type === 'userDisconnect') {
-                broadcastKillPeer(user.uid, wss)
+            broadcastUserList(lobbyId)
+
+            ws.send(
+                JSON.stringify({
+                    type: 'lobby-joined',
+                    lobbyId,
+                })
+            )
+            broadcastLobbyUserCounts(wss)
+        }
+
+        if (data.type === 'changeLobby') {
+            const { newLobbyId, pass, user } = data
+
+            const meta = lobbyMeta.get(newLobbyId)
+            if (meta && meta.pass !== pass) {
+                ws.send(
+                    JSON.stringify({
+                        type: 'error',
+                        message: 'Invalid password for lobby',
+                    })
+                )
+                return
             }
 
-            if (data.type === 'sendMessage') {
-                broadCastUserMessage(data)
+            if (!user) return
+            removeUserFromAllLobbies(user.uid, wss)
+
+            // make sure we clear timeouts when we start the new lobby
+            if (lobbyTimeouts.has(newLobbyId)) {
+                clearTimeout(lobbyTimeouts.get(newLobbyId))
+                lobbyTimeouts.delete(newLobbyId)
             }
 
-            // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
-            if (data.type === 'matchEnd') {
-                disconnectUserFromUsers(data.userUID, wss)
+            if (!lobbies.has(newLobbyId)) {
+                lobbies.set(newLobbyId, new Map())
             }
+            lobbies.get(newLobbyId).set(user.uid, { ...user, ws })
+            broadcastUserList(newLobbyId)
+            broadcastLobbyUserCounts(wss)
+        }
 
-            if (data.type === 'webrtc-ping-offer') {
-                const { to, from, offer } = data
-                if (to === from) return
-                if (connectedUsers.has(to)) {
-                    const targetUser = connectedUsers.get(to)
-                    targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-offer', offer, from }))
-                }
-            }
+        if (data.type === 'userDisconnect') {
+            broadcastKillPeer(user.uid, wss)
+        }
 
-            if (data.type === 'webrtc-ping-answer') {
-                const { to, from, answer } = data
-                if (to === from) return
-                if (connectedUsers.has(to)) {
-                    const targetUser = connectedUsers.get(to)
-                    targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
-                }
-            }
+        if (data.type === 'sendMessage') {
+            broadCastUserMessage(data)
+        }
 
-            //handle decline a call
-            if (data.type === 'webrtc-ping-decline') {
-                const { to, from } = data
-                if (to === from) return
-                if (connectedUsers.has(to)) {
-                    const targetUser = connectedUsers.get(to)
-                    targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-decline', from }))
-                }
-            }
+        // We can send a message to end a match to another user, say if the emulator crashes or we close it etc.
+        if (data.type === 'matchEnd') {
+            disconnectUserFromUsers(data.userUID, wss)
+        }
 
-            if (data.type === 'webrtc-ping-candidate') {
-                const { to, from, candidate } = data
-                if (to === from) return
-                // console.log('we got an ice candidate', to, candidate)
-                if (connectedUsers.has(to)) {
-                    const targetUser = connectedUsers.get(to)
-                    targetUser.ws.send(
-                        JSON.stringify({ type: 'webrtc-ping-candidate', candidate, from })
-                    )
-                }
+        if (data.type === 'webrtc-ping-offer') {
+            const { to, from, offer } = data
+            if (to === from) return
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-offer', offer, from }))
             }
+        }
 
-            // ping gathering
-            if (data.type === 'estimate-ping-users') {
-                console.log('users trying to ping eachother')
-                handleEstimatePing(data, ws)
+        if (data.type === 'webrtc-ping-answer') {
+            const { to, from, answer } = data
+            if (to === from) return
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-answer', answer, from }))
             }
-        })
+        }
+
+        //handle decline a call
+        if (data.type === 'webrtc-ping-decline') {
+            const { to, from } = data
+            if (to === from) return
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(JSON.stringify({ type: 'webrtc-ping-decline', from }))
+            }
+        }
+
+        if (data.type === 'webrtc-ping-candidate') {
+            const { to, from, candidate } = data
+            if (to === from) return
+            // console.log('we got an ice candidate', to, candidate)
+            if (connectedUsers.has(to)) {
+                const targetUser = connectedUsers.get(to)
+                targetUser.ws.send(
+                    JSON.stringify({ type: 'webrtc-ping-candidate', candidate, from })
+                )
+            }
+        }
+
+        // ping gathering
+        if (data.type === 'estimate-ping-users') {
+            console.log('users trying to ping eachother')
+            handleEstimatePing(data, ws)
+        }
+    })
 
     //handle close socket
     ws.on('close', async () => {
