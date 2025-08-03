@@ -82,26 +82,25 @@ wss.on('connection', (ws, req) => {
             // winstreak only 
             if (updateData.stateToUpdate.key === 'winStreak') {
                 if (updateData.stateToUpdate.value === 1) {
-                    const newValue = userToUpdate?.winStreak + updateData.stateToUpdate.value || 1
+                    const newValue = (userToUpdate?.winStreak || 0) + 1;
                     updatedUser = {
                         ...userToUpdate,
-                        [updateData.stateToUpdate.key]: newValue,
-                    }
+                        winStreak: newValue,
+                    };
                 } else {
                     updatedUser = {
                         ...userToUpdate,
-                        [updateData.stateToUpdate.key]: 0,
-                    }
+                        winStreak: 0,
+                    };
                 }
-            }
-
-            updatedUser = {
-                ...userToUpdate,
-                [updateData.stateToUpdate.key]: updateData.stateToUpdate.value,
+            } else {
+                updatedUser = {
+                    ...userToUpdate,
+                    [updateData.stateToUpdate.key]: updateData.stateToUpdate.value,
+                };
             }
 
             connectedUsers.set(updateData.uid, { ws, ...updatedUser })
-            console.log('update socket state data', updateData)
             updateLobbyData(updateData) // broadcast to all users in the lobby
         }
 
