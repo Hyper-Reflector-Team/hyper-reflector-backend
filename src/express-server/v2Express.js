@@ -92,7 +92,20 @@ app.post('/update-user-data', (req, res) => {
         })
 })
 
-app.post('/update-user-ping', async (req, res) => {
+app.post('/update-user-data-socket', async (req, res) => {
+    const authHeader = req.headers['authorization']
+    const token = authHeader && authHeader.split(' ')[1]
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        return res.status(403).send('Forbidden')
+    }
+
+    await api.updateUserData(req.body.userData, req.body.uid)
+
+    res.status(200).send('Updated')
+})
+
+app.post('/update-user-streak', async (req, res) => {
     const authHeader = req.headers['authorization']
     const token = authHeader && authHeader.split(' ')[1]
 

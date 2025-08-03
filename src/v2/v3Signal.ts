@@ -113,6 +113,28 @@ wss.on('connection', (ws, req) => {
             }
             console.log('update socket state data', newUpdateData, updateData);
             updateLobbyData(newUpdateData);
+
+            // if we want to we can call the server and update it
+            const body = {
+                userData: updatedUser,
+                uid: updateData.uid,
+            }
+
+            try {
+                await axios.post(
+                    `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/update-user-data-socket`,
+                    body,
+                    {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                        },
+                    }
+                )
+            } catch (err) {
+                console.error('Failed to update user from socket server:', err)
+                return
+            }
         }
 
         if (data.type === 'createLobby') {

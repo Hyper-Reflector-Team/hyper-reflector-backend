@@ -65,6 +65,7 @@ async function updateUserData(data, token) {
         'pingLon',
         'userProfilePic',
         'gravEmail',
+        'winStreak',
     ]
     const validData = Object.keys(data)
         .filter((key) => allowedFields.includes(key))
