@@ -23,4 +23,4 @@ function calculateNewElo(a, b, isWin) {
     return Math.round(newRating)
 }
 
-export { calculateNewElo }
+module.exports = { calculateNewElo }
