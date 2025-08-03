@@ -72,6 +72,7 @@ wss.on('connection', (ws, req) => {
         if (data.type === 'updateSocketState') {
             const { data: updateData } = data;
             const userToUpdate = connectedUsers.get(updateData.uid);
+            console.log('userToUpdate', userToUpdate)
 
             if (!userToUpdate) {
                 console.warn(`No user found for UID ${updateData.uid}`);
@@ -82,8 +83,10 @@ wss.on('connection', (ws, req) => {
 
             if (updateData.stateToUpdate.key === 'winStreak') {
                 const currentStreak = userToUpdate.winStreak || 0;
+                console.log(currentStreak)
 
                 if (updateData.stateToUpdate.value === 1) {
+                    console.log('streak increase')
                     updatedUser = {
                         winStreak: currentStreak + 1,
                     };
