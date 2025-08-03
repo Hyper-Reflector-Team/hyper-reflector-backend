@@ -2,7 +2,7 @@ const { getAuth } = require('firebase-admin/auth')
 const { getFirestore, FieldValue } = require('firebase-admin/firestore')
 const gravatar = require('gravatar.js')
 const dataConverter = require('./data')
-const { calculateNewElo } = require('src/v2/websockets/utils')
+const { calculateNewElo } = require('./utils')
 
 // firebase related commands
 const db = getFirestore()
