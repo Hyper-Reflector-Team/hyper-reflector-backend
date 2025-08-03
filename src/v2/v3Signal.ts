@@ -108,7 +108,7 @@ wss.on('connection', (ws, req) => {
             });
 
             console.log('update socket state data', updatedUser, updateData);
-            updateLobbyData(updatedUser);
+            updateLobbyData(updateData);
         }
 
         if (data.type === 'createLobby') {
