@@ -462,6 +462,7 @@ module.exports = {
     getPlayerStats,
     uploadMatchData,
     getUserName,
+    getUserElo,
     getCustomToken,
     getUserAccountByAuth,
     getUserData,
