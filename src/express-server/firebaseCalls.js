@@ -266,8 +266,10 @@ async function uploadMatchData(matchData, uid) {
         const player1Elo = await getUserElo(matchData.player1)
         const player2Elo = await getUserElo(matchData.player2)
         // set the users new elo on their profile
-        setUserElo(matchData.player1, calculateNewElo(player1Elo, player2Elo, playerWon))
-        setUserElo(matchData.player2, calculateNewElo(player2Elo, player1Elo, playerWon))
+        await setUserElo(matchData.player1, calculateNewElo(player1Elo, player2Elo, playerWon))
+        await setUserElo(matchData.player2, calculateNewElo(player2Elo, player1Elo, !playerWon))
+        console.log('P1 ELO before:', player1Elo, 'P2 ELO before:', player2Elo)
+        console.log('P1 won?', playerWon)
         batch.set(
             statsRef,
             {
