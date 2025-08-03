@@ -70,16 +70,16 @@ wss.on('connection', (ws, req) => {
         }
 
         if (data.type === 'updateSocketState') {
-            const { data: updateData } = data
-            const userToUpdate = connectedUsers.get(updateData.uid)
+            const { data: updateData } = data;
+            const userToUpdate = connectedUsers.get(updateData.uid);
 
             if (!userToUpdate) {
-                console.warn(`No user found for UID ${updateData.uid}`)
-                return
+                console.warn(`No user found for UID ${updateData.uid}`);
+                return;
             }
 
             let updatedUser;
-            // winstreak only 
+
             if (updateData.stateToUpdate.key === 'winStreak') {
                 if (updateData.stateToUpdate.value === 1) {
                     const newValue = (userToUpdate?.winStreak || 0) + 1;
@@ -100,8 +100,9 @@ wss.on('connection', (ws, req) => {
                 };
             }
 
-            connectedUsers.set(updateData.uid, { ws, ...updatedUser })
-            updateLobbyData(updateData) // broadcast to all users in the lobby
+            connectedUsers.set(updateData.uid, { ws, ...updatedUser });
+            console.log('update socket state data', updateData);
+            updateLobbyData(updateData);
         }
 
         if (data.type === 'createLobby') {
