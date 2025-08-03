@@ -117,8 +117,8 @@ wss.on('connection', (ws, req) => {
                 ...updateData,
                 [updateData.stateToUpdate.key]: updatedUser[updateData.stateToUpdate.key] // get the new value and set it
             }
-            console.log('update socket state data', updatedUser, updateData);
-            updateLobbyData(updateData);
+            console.log('update socket state data', newUpdateData, updateData);
+            updateLobbyData(newUpdateData);
         }
 
         if (data.type === 'createLobby') {
