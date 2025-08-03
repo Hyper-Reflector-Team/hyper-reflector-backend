@@ -11,6 +11,7 @@ import {
     broadcastKillPeer,
     updateLobbyData,
 } from './websockets/broadcasts'
+import e from 'express'
 const http = require('http')
 const WebSocket = require('ws')
 const axios = require('axios')
@@ -77,7 +78,24 @@ wss.on('connection', (ws, req) => {
                 return
             }
 
-            const updatedUser = {
+            let updatedUser;
+            // winstreak only 
+            if (updateData.stateToUpdate.key === 'winStreak') {
+                if (updateData.stateToUpdate.value === 1) {
+                    const newValue = userToUpdate?.winStreak + updateData.stateToUpdate.value || 1
+                    updatedUser = {
+                        ...userToUpdate,
+                        [updateData.stateToUpdate.key]: newValue,
+                    }
+                } else {
+                    updatedUser = {
+                        ...userToUpdate,
+                        [updateData.stateToUpdate.key]: 0,
+                    }
+                }
+            }
+
+            updatedUser = {
                 ...userToUpdate,
                 [updateData.stateToUpdate.key]: updateData.stateToUpdate.value,
             }
