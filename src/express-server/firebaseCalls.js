@@ -439,7 +439,7 @@ async function setUserElo(uid, newElo) {
 
     if (!querySnapshot.empty) {
         const userDoc = querySnapshot.docs[0]
-        await userDoc.ref.update({ elo: newElo })
+        await userDoc.ref.update({ accountELO: newElo })
         return true
     } else {
         return false
