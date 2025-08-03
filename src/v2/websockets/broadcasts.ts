@@ -138,6 +138,7 @@ export function broadcastKillPeer(userUID, wss) {
 }
 
 export async function updateLobbyData(updateData) {
+    console.log('updateData in broadcast', updateData)
     const lobby = await lobbies.get(updateData.lobbyId)
     const userData = lobby.get(updateData.uid)
     const toUpdate = updateData.stateToUpdate
