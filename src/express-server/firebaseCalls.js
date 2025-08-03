@@ -265,10 +265,16 @@ async function uploadMatchData(matchData, uid) {
         const superIndex = whichPlayer === '1' ? parsed['player1-super'] : parsed['player2-super']
         const player1Elo = await getUserElo(matchData.player1)
         const player2Elo = await getUserElo(matchData.player2)
+        // set the users new elo on their profile
+        setUserElo(matchData.player1, calculateNewElo(player1Elo, player2Elo, playerWon))
+        setUserElo(matchData.player2, calculateNewElo(player2Elo, player1Elo, playerWon))
         batch.set(
             statsRef,
             {
-                accountElo: calculateNewElo(player1Elo, player2Elo, playerWon),
+                accountElo:
+                    whichPlayer === '1'
+                        ? calculateNewElo(player1Elo, player2Elo, playerWon)
+                        : calculateNewElo(player2Elo, player1Elo, playerWon),
                 totalGames: FieldValue.increment(1),
                 totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
@@ -415,6 +421,21 @@ async function getUserName(uid) {
         return querySnapshot.docs[0].data().userName
     } else {
         return null
+    }
+}
+
+// set elo
+async function setUserElo(uid, newElo) {
+    if (!uid) return
+
+    const querySnapshot = await usersRef.where('uid', '==', uid).get()
+
+    if (!querySnapshot.empty) {
+        const userDoc = querySnapshot.docs[0]
+        await userDoc.ref.update({ elo: newElo })
+        return true
+    } else {
+        return false
     }
 }
 
