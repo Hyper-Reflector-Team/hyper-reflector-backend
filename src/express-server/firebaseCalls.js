@@ -237,6 +237,20 @@ async function uploadMatchData(matchData, uid) {
     }
 
     // recent match session meta data for player profile
+    const player1Elo = (await getUserElo(matchData.player1)) || 1200
+    const player2Elo = (await getUserElo(matchData.player2)) || 1200
+
+    const p1Won = matchResult === '1'
+
+    const newP1Elo = calculateNewElo(player1Elo, player2Elo, p1Won)
+    const newP2Elo = calculateNewElo(player2Elo, player1Elo, !p1Won)
+
+    console.log('P1 ELO before:', player1Elo, 'P2 ELO before:', player2Elo)
+    console.log('P1 won?', p1Won, '→ P1 new ELO:', newP1Elo, 'P2 new ELO:', newP2Elo)
+
+    await setUserElo(matchData.player1, newP1Elo)
+    await setUserElo(matchData.player2, newP2Elo)
+
     const batch = db.batch()
     for (const player of [matchData.player1, matchData.player2]) {
         if (!player) continue
@@ -263,20 +277,11 @@ async function uploadMatchData(matchData, uid) {
         const playerWon = matchResult === whichPlayer ? true : false
         const character = whichPlayer === '1' ? p1Char : p2Char
         const superIndex = whichPlayer === '1' ? parsed['player1-super'] : parsed['player2-super']
-        const player1Elo = await getUserElo(matchData.player1)
-        const player2Elo = await getUserElo(matchData.player2)
-        // set the users new elo on their profile
-        await setUserElo(matchData.player1, calculateNewElo(player1Elo, player2Elo, playerWon))
-        await setUserElo(matchData.player2, calculateNewElo(player2Elo, player1Elo, !playerWon))
-        console.log('P1 ELO before:', player1Elo, 'P2 ELO before:', player2Elo)
-        console.log('P1 won?', playerWon)
+        const accountElo = whichPlayer === '1' ? newP1Elo : newP2Elo
         batch.set(
             statsRef,
             {
-                accountElo:
-                    whichPlayer === '1'
-                        ? calculateNewElo(player1Elo, player2Elo, playerWon)
-                        : calculateNewElo(player2Elo, player1Elo, playerWon),
+                accountElo: accountElo,
                 totalGames: FieldValue.increment(1),
                 totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
