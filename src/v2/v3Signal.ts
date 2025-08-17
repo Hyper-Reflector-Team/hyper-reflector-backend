@@ -66,7 +66,7 @@ wss.on('connection', (ws, req) => {
             // Optional: send this user a full snapshot of their lobby
             const uids = Array.from(lobbies.get(DEFAULT_LOBBY) ?? [])
             const users = uids
-                .map(id => getUser(id))
+                .map(id => getUser(id as string))
                 .filter(Boolean)
                 .map(u => {
                     const { /* strip nothing or specific fields as needed */ ...rest } = u!
