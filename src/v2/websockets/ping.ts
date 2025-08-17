@@ -23,8 +23,17 @@ async function handleEstimatePing(data, ws) {
     )
 
     const userA = userAResponse.data
-    const userB = connectedUsers.get(userData.userB.id)?.userData
-    if (!userA?.pingLat || !userB?.pingLat) return
+    // const userB = connectedUsers.get(userData.userB.id)?.userData
+    // test
+    const userB = connectedUsers.get(userData.userB.id)
+    if (!userA?.pingLat || !userB?.pingLat) {
+        // retry gathering ping
+        const tries = (data.__tries || 0) + 1
+        if (tries <= 5) {
+            setTimeout(() => handleEstimatePing({ ...data, __tries: tries }, ws), 250)
+        }
+        return
+    }
 
     let distance = 1
     try {
@@ -182,8 +191,9 @@ async function getGeoLocation(req, user, ws) {
         console.log('failed to set user', error)
     }
 
-    syncUserToLobby(user.uid, updatedUser.lobbyId)
-    if (updatedUser.lobbyId) broadcastUserList(updatedUser.lobbyId)
+    const lobbyId = updatedUser.lobbyId || 'Hyper Reflector'
+    syncUserToLobby(user.uid, lobbyId)
+    broadcastUserList(lobbyId)
 
     const peerPings = getPeerPingsForUser(updatedUser)
 
