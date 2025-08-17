@@ -1,3 +1,5 @@
+import { broadcastUserList, syncUserToLobby } from "./broadcasts"
+
 // Websocket functions for gathering ping and location information
 const { connectedUsers } = require('../websockets/maps')
 const serverInfo = require('../../../keys/server')
@@ -179,6 +181,9 @@ async function getGeoLocation(req, user, ws) {
     } catch (error) {
         console.log('failed to set user', error)
     }
+
+    syncUserToLobby(user.uid, updatedUser.lobbyId)
+    if (updatedUser.lobbyId) broadcastUserList(updatedUser.lobbyId)
 
     const peerPings = getPeerPingsForUser(updatedUser)
 

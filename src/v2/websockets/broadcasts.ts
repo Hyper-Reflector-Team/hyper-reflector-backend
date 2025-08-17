@@ -161,10 +161,14 @@ export async function updateLobbyData(updateData) {
     const toUpdate = updateData.stateToUpdate
     lobby.set(updateData.uid, { ...existing, [toUpdate.key]: toUpdate.value })
     broadcastUserList(updateData.lobbyId)
-    // console.log('updateData in broadcast', updateData)
-    // const lobby = await lobbies.get(updateData.lobbyId)
-    // const userData = lobby.get(updateData.uid)
-    // const toUpdate = updateData.stateToUpdate
-    // await lobby.set(updateData.uid, { ...userData, ...{ [toUpdate.key]: toUpdate.value } })
-    // broadcastUserList(updateData.lobbyId)
+}
+
+export function syncUserToLobby(uid: string, lobbyId) {
+    const user = connectedUsers.get(uid)
+    if (!user || !lobbyId) return
+
+    const lobby = lobbies.get(lobbyId)
+    if (lobby) {
+        lobby.set(uid, { ...user }) // fresh copy into lobby map
+    }
 }

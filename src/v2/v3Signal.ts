@@ -10,9 +10,8 @@ import {
     removeUserFromAllLobbies,
     broadcastKillPeer,
     updateLobbyData,
+    syncUserToLobby
 } from './websockets/broadcasts'
-import { leaveAllLobbies, getLobbyMembers, getUser, setUser, joinLobby } from './websockets/utils'
-const DEFAULT_LOBBY = 'Hyper Reflector'
 const http = require('http')
 const WebSocket = require('ws')
 const axios = require('axios')
@@ -49,17 +48,16 @@ wss.on('connection', (ws, req) => {
 
             if (!connectedUsers.has(user.uid)) {
                 connectedUsers.set(user.uid, { ...user, ws })
-
                 // auto join the default lobby
                 const defaultLobbyId = 'Hyper Reflector'
+
                 if (!lobbies.has(defaultLobbyId)) {
                     lobbies.set(defaultLobbyId, new Map())
                 }
-                lobbies.get(defaultLobbyId).set(user.uid, { ...user, ws })
+                syncUserToLobby(user.uid, defaultLobbyId)
+                // lobbies.get(defaultLobbyId).set(user.uid, { ...user, ws })
                 broadcastUserList(defaultLobbyId)
             }
-
-
 
             ws.send(
                 JSON.stringify({
@@ -106,14 +104,13 @@ wss.on('connection', (ws, req) => {
                 ...updatedUser,
                 ws: userToUpdate.ws,
             });
-
+            syncUserToLobby(updateData.uid, updateData.lobbyId)
             const newUpdateData = {
                 ...updateData,
                 stateToUpdate: { key: updateData.stateToUpdate.key, value: updatedUser[updateData.stateToUpdate.key] } // get the new value and set it
             }
             console.log('update socket state data', newUpdateData, updateData);
             updateLobbyData(newUpdateData);
-
             // if we want to we can call the server and update it
             const body = {
                 userData: updatedUser,
@@ -141,68 +138,116 @@ wss.on('connection', (ws, req) => {
             const { lobbyId, pass, user, isPrivate } = data
 
             if (lobbies.has(lobbyId)) {
-                ws.send(
-                    JSON.stringify({
-                        type: 'error',
-                        message: 'Lobby already exists',
-                    })
-                )
+                ws.send(JSON.stringify({ type: 'error', message: 'Lobby already exists' }))
                 return
             }
 
             removeUserFromAllLobbies(user.uid, wss)
 
-            lobbies.set(lobbyId, new Map())
-            lobbies.get(lobbyId).set(user.uid, { ...user, ws })
+            if (!lobbies.has(lobbyId)) lobbies.set(lobbyId, new Map())
+            userLobby.set(user.uid, lobbyId)
+
+            const cu = connectedUsers.get(user.uid) || { ...user, ws }
+            connectedUsers.set(user.uid, { ...cu, ws })
+            lobbies.get(lobbyId)!.set(user.uid, { ...connectedUsers.get(user.uid)! })
 
             lobbyMeta.set(lobbyId, { pass, isPrivate })
-
-            if (lobbyTimeouts.has(lobbyId)) {
-                clearTimeout(lobbyTimeouts.get(lobbyId))
-                lobbyTimeouts.delete(lobbyId)
-            }
+            if (lobbyTimeouts.has(lobbyId)) { clearTimeout(lobbyTimeouts.get(lobbyId)!); lobbyTimeouts.delete(lobbyId) }
 
             broadcastUserList(lobbyId)
-
-            ws.send(
-                JSON.stringify({
-                    type: 'lobby-joined',
-                    lobbyId,
-                })
-            )
+            ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId }))
             broadcastLobbyUserCounts(wss)
         }
+
+        // if (data.type === 'createLobby') {
+        //     const { lobbyId, pass, user, isPrivate } = data
+
+        //     if (lobbies.has(lobbyId)) {
+        //         ws.send(
+        //             JSON.stringify({
+        //                 type: 'error',
+        //                 message: 'Lobby already exists',
+        //             })
+        //         )
+        //         return
+        //     }
+
+        //     removeUserFromAllLobbies(user.uid, wss)
+
+        //     lobbies.set(lobbyId, new Map())
+        //     lobbies.get(lobbyId).set(user.uid, { ...user, ws })
+
+        //     lobbyMeta.set(lobbyId, { pass, isPrivate })
+
+        //     if (lobbyTimeouts.has(lobbyId)) {
+        //         clearTimeout(lobbyTimeouts.get(lobbyId))
+        //         lobbyTimeouts.delete(lobbyId)
+        //     }
+
+        //     broadcastUserList(lobbyId)
+
+        //     ws.send(
+        //         JSON.stringify({
+        //             type: 'lobby-joined',
+        //             lobbyId,
+        //         })
+        //     )
+        //     broadcastLobbyUserCounts(wss)
+        // }
 
         if (data.type === 'changeLobby') {
             const { newLobbyId, pass, user } = data
-
             const meta = lobbyMeta.get(newLobbyId)
             if (meta && meta.pass !== pass) {
-                ws.send(
-                    JSON.stringify({
-                        type: 'error',
-                        message: 'Invalid password for lobby',
-                    })
-                )
+                ws.send(JSON.stringify({ type: 'error', message: 'Invalid password for lobby' }))
                 return
             }
-
             if (!user) return
+
             removeUserFromAllLobbies(user.uid, wss)
 
-            // make sure we clear timeouts when we start the new lobby
-            if (lobbyTimeouts.has(newLobbyId)) {
-                clearTimeout(lobbyTimeouts.get(newLobbyId))
-                lobbyTimeouts.delete(newLobbyId)
-            }
+            if (lobbyTimeouts.has(newLobbyId)) { clearTimeout(lobbyTimeouts.get(newLobbyId)!); lobbyTimeouts.delete(newLobbyId) }
+            if (!lobbies.has(newLobbyId)) lobbies.set(newLobbyId, new Map())
+            userLobby.set(user.uid, newLobbyId)
 
-            if (!lobbies.has(newLobbyId)) {
-                lobbies.set(newLobbyId, new Map())
-            }
-            lobbies.get(newLobbyId).set(user.uid, { ...user, ws })
+            // again: canonical -> lobby
+            const cu = connectedUsers.get(user.uid)
+            if (cu) lobbies.get(newLobbyId)!.set(user.uid, { ...cu })
+
             broadcastUserList(newLobbyId)
             broadcastLobbyUserCounts(wss)
         }
+
+        // if (data.type === 'changeLobby') {
+        //     const { newLobbyId, pass, user } = data
+
+        //     const meta = lobbyMeta.get(newLobbyId)
+        //     if (meta && meta.pass !== pass) {
+        //         ws.send(
+        //             JSON.stringify({
+        //                 type: 'error',
+        //                 message: 'Invalid password for lobby',
+        //             })
+        //         )
+        //         return
+        //     }
+
+        //     if (!user) return
+        //     removeUserFromAllLobbies(user.uid, wss)
+
+        //     // make sure we clear timeouts when we start the new lobby
+        //     if (lobbyTimeouts.has(newLobbyId)) {
+        //         clearTimeout(lobbyTimeouts.get(newLobbyId))
+        //         lobbyTimeouts.delete(newLobbyId)
+        //     }
+
+        //     if (!lobbies.has(newLobbyId)) {
+        //         lobbies.set(newLobbyId, new Map())
+        //     }
+        //     lobbies.get(newLobbyId).set(user.uid, { ...user, ws })
+        //     broadcastUserList(newLobbyId)
+        //     broadcastLobbyUserCounts(wss)
+        // }
 
         if (data.type === 'userDisconnect') {
             broadcastKillPeer(user.uid, wss)
