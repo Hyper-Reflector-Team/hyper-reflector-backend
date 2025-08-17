@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 // Used for maintaining websocket functions that call all users, or all users in a lobby.
-import { lobbies, lobbyTimeouts, lobbyMeta } from './maps'
+import { lobbies, lobbyTimeouts, lobbyMeta, connectedUsers } from './maps'
 
 export function getLobbyUsers(lobbyId) {
     const lobby = lobbies.get(lobbyId)
@@ -65,21 +65,38 @@ export function broadcastLobbyUserCounts(wss) {
     })
 }
 
+// export function broadcastUserList(lobbyId) {
+//     const lobby = lobbies.get(lobbyId)
+//     if (!lobby) return
+
+//     const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
+
+//     for (const user of lobby.values()) {
+//         if (!user.ws) return
+//         user.ws.send(
+//             JSON.stringify({
+//                 type: 'connected-users',
+//                 users,
+//                 count: users.length,
+//             })
+//         )
+//     }
+// }
+
 export function broadcastUserList(lobbyId) {
     const lobby = lobbies.get(lobbyId)
     if (!lobby) return
 
-    const users = getLobbyUsers(lobbyId).map(({ ws, ...rest }) => rest)
+    const users = [...lobby.keys()].map(uid => {
+        const connectedUser = connectedUsers.get(uid)
+        if (!connectedUser) return null
+        const { ws, ...rest } = connectedUser
+        return rest
+    }).filter(Boolean)
 
-    for (const user of lobby.values()) {
-        if (!user.ws) return
-        user.ws.send(
-            JSON.stringify({
-                type: 'connected-users',
-                users,
-                count: users.length,
-            })
-        )
+    for (const member of lobby.values()) {
+        if (!member.ws || member.ws.readyState !== WebSocket.OPEN) continue
+        member.ws.send(JSON.stringify({ type: 'connected-users', users, count: users.length }))
     }
 }
 
@@ -138,10 +155,16 @@ export function broadcastKillPeer(userUID, wss) {
 }
 
 export async function updateLobbyData(updateData) {
-    console.log('updateData in broadcast', updateData)
-    const lobby = await lobbies.get(updateData.lobbyId)
-    const userData = lobby.get(updateData.uid)
+    const lobby = lobbies.get(updateData.lobbyId)
+    if (!lobby) return
+    const existing = lobby.get(updateData.uid) || connectedUsers.get(updateData.uid) || {}
     const toUpdate = updateData.stateToUpdate
-    await lobby.set(updateData.uid, { ...userData, ...{ [toUpdate.key]: toUpdate.value } })
+    lobby.set(updateData.uid, { ...existing, [toUpdate.key]: toUpdate.value })
     broadcastUserList(updateData.lobbyId)
+    // console.log('updateData in broadcast', updateData)
+    // const lobby = await lobbies.get(updateData.lobbyId)
+    // const userData = lobby.get(updateData.uid)
+    // const toUpdate = updateData.stateToUpdate
+    // await lobby.set(updateData.uid, { ...userData, ...{ [toUpdate.key]: toUpdate.value } })
+    // broadcastUserList(updateData.lobbyId)
 }

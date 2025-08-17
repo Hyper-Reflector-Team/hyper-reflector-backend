@@ -165,14 +165,17 @@ async function getGeoLocation(req, user, ws) {
         console.error('Geo update failed:', error)
     }
 
+    const prev = connectedUsers.get(user.uid) || {}
+
     const updatedUser = {
+        ...prev,
         ...user,
         ...userGeoData,
     }
 
     console.log('trying to update user with', updatedUser)
     try {
-        connectedUsers.set(user.uid, { ws, ...updatedUser })
+        connectedUsers.set(user.uid, { ...updatedUser, ws })
     } catch (error) {
         console.log('failed to set user', error)
     }
