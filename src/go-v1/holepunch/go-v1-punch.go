@@ -51,16 +51,27 @@ func main() {
 
 	log.Println("UDP server listening on", addr.String())
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, 2048)
 
+	// for {
+	// 	n, remoteAddr, err := conn.ReadFromUDP(buf)
+	// 	if err != nil {
+	// 		log.Println("Read error:", err)
+	// 		continue
+	// 	}
+
+	// 	go handleMessage(conn, buf[:n], remoteAddr)
+	// }
+	// test fix to see if the copy helps
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			log.Println("Read error:", err)
 			continue
 		}
-
-		go handleMessage(conn, buf[:n], remoteAddr)
+		dataCopy := make([]byte, n)
+		copy(dataCopy, buf[:n])
+		go handleMessage(conn, dataCopy, remoteAddr)
 	}
 }
 
@@ -80,10 +91,27 @@ func handleMessage(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	// if msg.Kill {
+	// 	log.Printf("Removing users: %s & %s\n", msg.UID, msg.PeerUID)
+	// 	delete(users, msg.UID)
+	// 	delete(users, msg.PeerUID)
+	// 	return
+	// }
+
+	// more robust kill code
 	if msg.Kill {
-		log.Printf("Removing users: %s & %s\n", msg.UID, msg.PeerUID)
-		delete(users, msg.UID)
-		delete(users, msg.PeerUID)
+		if msg.UID != "" {
+			delete(users, msg.UID)
+		}
+		if msg.PeerUID != "" {
+			delete(users, msg.PeerUID)
+		}
+		log.Printf("Kill processed. Remaining users: %d\n", len(users))
+		return
+	}
+
+	if msg.UID == "" || msg.PeerUID == "" {
+		log.Println("Invalid message format (missing uid/peerUid)")
 		return
 	}
 
