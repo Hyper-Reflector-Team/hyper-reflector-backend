@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 // Used for maintaining websocket functions that call all users, or all users in a lobby.
-import { lobbies, lobbyTimeouts, lobbyMeta, connectedUsers, userSockets } from './maps'
+import { lobbies, lobbyTimeouts, lobbyMeta, connectedUsers } from './maps'
 
 export function getLobbyUsers(lobbyId) {
     const lobby = lobbies.get(lobbyId)
@@ -39,48 +39,31 @@ export function disconnectUserFromUsers(userUID, wss) {
     })
 }
 
-export function broadcastLobbyUserCounts(wss: WebSocket.Server) {
-    const updates = []
-    for (const [lobbyId, members] of lobbies.entries()) {
+export function broadcastLobbyUserCounts(wss) {
+    if (!wss) return
+    let updates = []
+
+    for (const [lobbyId, users] of lobbies.entries()) {
         const meta = lobbyMeta.get(lobbyId)
         updates.push({
             name: lobbyId,
-            users: members.size,
+            users: users.size,
             pass: meta?.pass || '',
-            isPrivate: !!meta?.isPrivate,
+            isPrivate: meta?.isPrivate || false,
         })
     }
-    const msg = JSON.stringify({ type: 'lobby-user-counts', updates })
-    wss.clients.forEach(ws => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(msg)
+
+    const payload = JSON.stringify({
+        type: 'lobby-user-counts',
+        updates,
+    })
+
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(payload)
+        }
     })
 }
-
-// export function broadcastLobbyUserCounts(wss) {
-//     if (!wss) return
-//     let updates = []
-
-//     for (const [lobbyId, users] of lobbies.entries()) {
-//         const meta = lobbyMeta.get(lobbyId)
-//         updates.push({
-//             name: lobbyId,
-//             users: users.size,
-//             pass: meta?.pass || '',
-//             isPrivate: meta?.isPrivate || false,
-//         })
-//     }
-
-//     const payload = JSON.stringify({
-//         type: 'lobby-user-counts',
-//         updates,
-//     })
-
-//     wss.clients.forEach((client) => {
-//         if (client.readyState === WebSocket.OPEN) {
-//             client.send(payload)
-//         }
-//     })
-// }
 
 // export function broadcastUserList(lobbyId) {
 //     const lobby = lobbies.get(lobbyId)
@@ -100,23 +83,23 @@ export function broadcastLobbyUserCounts(wss: WebSocket.Server) {
 //     }
 // }
 
-export function broadcastUserList(lobbyId: string) {
-    const uids = Array.from(lobbies.get(lobbyId) ?? [])
-    const users = uids
-        .map(uid => connectedUsers.get(uid))
-        .filter(Boolean)
-        .map(({ /* strip nothing or specific fields as needed */ ...u }) => u)
+export function broadcastUserList(lobbyId) {
+    const lobby = lobbies.get(lobbyId)
+    if (!lobby) return
 
-    for (const uid of uids) {
-        const ws = userSockets.get(uid)
-        if (!ws || ws.readyState !== WebSocket.OPEN) continue
-        ws.send(JSON.stringify({
-            type: 'connected-users',
-            users,
-            count: users.length,
-        }))
+    const users = [...lobby.keys()].map(uid => {
+        const connectedUser = connectedUsers.get(uid)
+        if (!connectedUser) return null
+        const { ws, ...rest } = connectedUser
+        return rest
+    }).filter(Boolean)
+
+    for (const member of lobby.values()) {
+        if (!member.ws || member.ws.readyState !== WebSocket.OPEN) continue
+        member.ws.send(JSON.stringify({ type: 'connected-users', users, count: users.length }))
     }
 }
+
 // if the lobby is empty close it after 30 seconds.
 export function removeUserFromAllLobbies(uid, wss) {
     if (!wss) return
