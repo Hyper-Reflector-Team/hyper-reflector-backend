@@ -6,6 +6,7 @@
   "scripts": {
     "v2Express": "node src/express-server/v2Express.js",
     "v3Signal": "npx ts-node src/v2/v3Signal.ts",
+    "vNew": "npx ts-node src/vNew/server.ts",
     "v2Punch": "node src/v2/v2Holepuncher.ts",
     "v1GoPunch": "go run src/go-v1/holepunch/go-v1-punch.go"
   },
