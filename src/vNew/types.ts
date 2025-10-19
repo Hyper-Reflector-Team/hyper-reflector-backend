@@ -49,7 +49,7 @@ export type SignalMessage =
     | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean }
     | { type: 'changeLobby'; newLobbyId: string; pass?: string; user: SocketUser }
     | { type: 'userDisconnect'; userUID?: string }
-    | { type: 'sendMessage'; sender: SocketUser; message: string }
+    | { type: 'sendMessage'; sender: SocketUser; message: string; messageId?: string }
     | { type: 'matchEnd'; userUID: string }
     | { type: 'webrtc-ping-offer'; to: string; from: string; offer: unknown }
     | { type: 'webrtc-ping-answer'; to: string; from: string; answer: unknown }

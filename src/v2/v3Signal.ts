@@ -10,7 +10,8 @@ import {
     removeUserFromAllLobbies,
     broadcastKillPeer,
     updateLobbyData,
-    syncUserToLobby
+    syncUserToLobby,
+    sendLobbyHistory,
 } from './websockets/broadcasts'
 const http = require('http')
 const WebSocket = require('ws')
@@ -65,6 +66,8 @@ wss.on('connection', (ws, req) => {
                     users: [...connectedUsers.values()].map(({ ws, ...user }) => user),
                 })
             )
+
+            sendLobbyHistory(ws, user.lobbyId || defaultLobbyId)
         }
 
         if (data.type === 'updateSocketState') {
@@ -157,6 +160,7 @@ wss.on('connection', (ws, req) => {
             broadcastUserList(lobbyId)
             ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId }))
             broadcastLobbyUserCounts(wss)
+            sendLobbyHistory(ws, lobbyId)
         }
 
         // if (data.type === 'createLobby') {
@@ -216,6 +220,7 @@ wss.on('connection', (ws, req) => {
 
             broadcastUserList(newLobbyId)
             broadcastLobbyUserCounts(wss)
+            sendLobbyHistory(ws, newLobbyId)
         }
 
         // if (data.type === 'changeLobby') {

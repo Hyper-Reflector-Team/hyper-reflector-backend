@@ -10,6 +10,11 @@ export function ensureLobby(lobbyId: string): Map<string, ConnectedUser> {
     return lobbies.get(lobbyId)!;
 }
 
+function toPublicUser(user: ConnectedUser) {
+    const { ws: _ws, ...rest } = user;
+    return rest;
+}
+
 export function syncUserToLobby(uid: string, lobbyId: string) {
     if (!uid || !lobbyId) return;
 
@@ -29,8 +34,8 @@ export function broadcastUserList(lobbyId: string) {
         .map((uid) => {
             const entry = connectedUsers.get(uid);
             if (!entry) return null;
-            const { ws, ...rest } = entry;
-            return rest.uid ? rest : null;
+            const publicUser = toPublicUser(entry);
+            return publicUser.uid ? publicUser : null;
         })
         .filter(Boolean);
 
@@ -119,14 +124,24 @@ export function cancelLobbyTimeout(lobbyId: string) {
     }
 }
 
-export function broadcastUserMessage(lobbyId: string, message: string, sender: ConnectedUser) {
+export function broadcastUserMessage(
+    lobbyId: string,
+    message: string,
+    sender: ConnectedUser,
+    messageId?: string
+) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
 
+    const now = Date.now();
+    const publicSender = toPublicUser(sender);
+
     const payload = JSON.stringify({
         type: 'getRoomMessage',
+        id: messageId ?? `${publicSender.uid ?? 'message'}-${now}`,
+        timeStamp: now,
         message,
-        sender,
+        sender: publicSender,
     });
 
     for (const user of lobby.values()) {

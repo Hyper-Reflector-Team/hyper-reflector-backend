@@ -2,7 +2,7 @@ import axios from 'axios';
 import WebSocket from 'ws';
 
 import { connectedUsers, lobbyMeta, lobbies, userLobby } from './state';
-import { ConnectedUser, MessageContext, SignalMessage } from './types';
+import { ConnectedUser, MessageContext, SignalMessage, SocketUser } from './types';
 import {
     broadcastKillPeer,
     broadcastLobbyCounts,
@@ -41,7 +41,7 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             broadcastKillPeer(message.userUID ?? ctx.ws.uid, ctx.wss);
             break;
         case 'sendMessage':
-            await handleSendMessage(message.sender, message.message);
+            await handleSendMessage(message.sender, message.message, message.messageId);
             break;
         case 'matchEnd':
             disconnectUserFromUsers(message.userUID, ctx.wss);
@@ -211,11 +211,20 @@ async function handleChangeLobby(
     broadcastLobbyCounts(ctx.wss);
 }
 
-async function handleSendMessage(sender: any, message: string) {
-    const connectedSender = connectedUsers.get(sender.uid);
-    if (!connectedSender?.lobbyId) return;
+async function handleSendMessage(sender: SocketUser | undefined, message: string, messageId?: string) {
+    if (!sender?.uid || typeof message !== 'string') {
+        return;
+    }
 
-    broadcastUserMessage(connectedSender.lobbyId, message, connectedSender);
+    const connectedSender = connectedUsers.get(sender.uid);
+    if (!connectedSender) return;
+
+    const lobbyId =
+        connectedSender.lobbyId ?? userLobby.get(connectedSender.uid) ?? DEFAULT_LOBBY_ID;
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage.length) return;
+
+    broadcastUserMessage(lobbyId, trimmedMessage, connectedSender, messageId);
 }
 
 function forwardWebRtc(message: Extract<

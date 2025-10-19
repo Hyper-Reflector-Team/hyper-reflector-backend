@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 // Used for maintaining websocket functions that call all users, or all users in a lobby.
-import { lobbies, lobbyTimeouts, lobbyMeta, connectedUsers } from './maps'
+import { lobbies, lobbyTimeouts, lobbyMeta, connectedUsers, lobbyMessages, LOBBY_MESSAGE_BUFFER } from './maps'
 
 export function getLobbyUsers(lobbyId) {
     const lobby = lobbies.get(lobbyId)
@@ -18,13 +18,33 @@ export function broadCastUserMessage(messageData) {
 
     const lobby = lobbies.get(lobbyId)
 
+    const historyEntry = {
+        id: messageData.id || `${uid}-${Date.now()}`,
+        role: messageData.role || 'user',
+        text: message,
+        timeStamp: Date.now(),
+        sender,
+    }
+
+    if (!lobbyMessages.has(lobbyId)) {
+        lobbyMessages.set(lobbyId, [])
+    }
+    const history = lobbyMessages.get(lobbyId)!
+    history.push(historyEntry)
+    if (history.length > LOBBY_MESSAGE_BUFFER) {
+        history.shift()
+    }
+
     for (const user of lobby.values()) {
         if (user.ws.readyState === WebSocket.OPEN) {
             user.ws.send(
                 JSON.stringify({
                     type: 'getRoomMessage',
-                    message,
-                    sender,
+                    message: historyEntry.text,
+                    sender: historyEntry.sender,
+                    id: historyEntry.id,
+                    timeStamp: historyEntry.timeStamp,
+                    role: historyEntry.role,
                 })
             )
         }
@@ -171,4 +191,23 @@ export function syncUserToLobby(uid: string, lobbyId) {
     if (lobby) {
         lobby.set(uid, { ...user }) // fresh copy into lobby map
     }
+}
+
+export function sendLobbyHistory(ws: WebSocket, lobbyId: string) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    const history = lobbyMessages.get(lobbyId) || []
+
+    ws.send(
+        JSON.stringify({
+            type: 'lobby-history',
+            lobbyId,
+            messages: history.map((entry) => ({
+                id: entry.id,
+                text: entry.text,
+                timeStamp: entry.timeStamp,
+                role: entry.role || 'user',
+                sender: entry.sender,
+            })),
+        })
+    )
 }
