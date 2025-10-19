@@ -195,14 +195,24 @@ async function handleChangeLobby(
     const lobby = ensureLobby(newLobbyId);
     const connectedUser = connectedUsers.get(user.uid);
     if (connectedUser) {
-        lobby.set(user.uid, { ...connectedUser });
+        const updatedUser: ConnectedUser = {
+            ...connectedUser,
+            lobbyId: newLobbyId,
+        };
+
+        connectedUsers.set(user.uid, updatedUser);
+        lobby.set(user.uid, { ...updatedUser });
     } else {
-        lobby.set(user.uid, {
+        const hydratedUser: ConnectedUser = {
             ...user,
             ws: ctx.ws,
             joinedAt: Date.now(),
             lastHeartbeat: Date.now(),
-        } as ConnectedUser);
+            lobbyId: newLobbyId,
+        } as ConnectedUser;
+
+        connectedUsers.set(user.uid, hydratedUser);
+        lobby.set(user.uid, { ...hydratedUser });
     }
 
     userLobby.set(user.uid, newLobbyId);
@@ -220,7 +230,9 @@ async function handleSendMessage(sender: SocketUser | undefined, message: string
     if (!connectedSender) return;
 
     const lobbyId =
-        connectedSender.lobbyId ?? userLobby.get(connectedSender.uid) ?? DEFAULT_LOBBY_ID;
+        userLobby.get(connectedSender.uid) ??
+        connectedSender.lobbyId ??
+        DEFAULT_LOBBY_ID;
     const trimmedMessage = message.trim();
     if (!trimmedMessage.length) return;
 
