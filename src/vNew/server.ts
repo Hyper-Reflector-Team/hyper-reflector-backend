@@ -107,20 +107,39 @@ const heartbeatTicker = setInterval(() => {
     wss.clients.forEach((client) => {
         const ws = client as AugmentedWebSocket;
 
+        if (ws.readyState !== ws.OPEN) {
+            return;
+        }
+
         if (!ws.isAlive) {
             ws.terminate();
             return;
         }
 
         ws.isAlive = false;
-        ws.ping();
 
-        if (ws.uid) {
-            const entry = connectedUsers.get(ws.uid);
-            if (entry && now - entry.lastHeartbeat > HEARTBEAT_TERMINATE_AFTER_MS) {
-                console.warn(`Terminating stale connection ${ws.uid}`);
-                ws.terminate();
-            }
+        try {
+            ws.ping();
+        } catch (err) {
+            console.warn('Failed to send ping; terminating socket', err);
+            ws.terminate();
+            return;
+        }
+
+        if (!ws.uid) return;
+
+        const entry = connectedUsers.get(ws.uid);
+        if (!entry) return;
+
+        const elapsed = now - entry.lastHeartbeat;
+        const gracePeriodMs = HEARTBEAT_INTERVAL_MS * 2;
+        const terminateThreshold = Math.max(HEARTBEAT_TERMINATE_AFTER_MS, HEARTBEAT_INTERVAL_MS + gracePeriodMs);
+
+        if (elapsed > terminateThreshold) {
+            console.warn(
+                `Terminating stale connection ${ws.uid}; idle for ${elapsed}ms (threshold ${terminateThreshold}ms)`
+            );
+            ws.terminate();
         }
     });
 }, HEARTBEAT_INTERVAL_MS);
