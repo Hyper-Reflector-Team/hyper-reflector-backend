@@ -48,6 +48,14 @@ export type SignalMessage =
     | { type: 'updateSocketState'; data: UpdateSocketStatePayload }
     | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean }
     | { type: 'changeLobby'; newLobbyId: string; pass?: string; user: SocketUser }
+    | {
+          type: 'request-match';
+          challengerId: string;
+          opponentId: string;
+          requestedBy: string;
+          lobbyId?: string;
+          gameName?: string;
+      }
     | { type: 'userDisconnect'; userUID?: string }
     | { type: 'sendMessage'; sender: SocketUser; message: string; messageId?: string }
     | { type: 'matchEnd'; userUID: string }

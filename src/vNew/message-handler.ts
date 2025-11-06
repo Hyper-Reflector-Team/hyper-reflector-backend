@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { randomUUID } from 'crypto';
 import WebSocket from 'ws';
 
 import { connectedUsers, lobbyMeta, lobbies, userLobby } from './state';
@@ -36,6 +37,9 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'changeLobby':
             await handleChangeLobby(ctx, message);
+            break;
+        case 'request-match':
+            await handleRequestMatch(ctx, message);
             break;
         case 'userDisconnect':
             broadcastKillPeer(message.userUID ?? ctx.ws.uid, ctx.wss);
@@ -219,6 +223,68 @@ async function handleChangeLobby(
 
     broadcastUserList(newLobbyId);
     broadcastLobbyCounts(ctx.wss);
+}
+
+async function handleRequestMatch(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'request-match' }>
+) {
+    const { challengerId, opponentId, requestedBy, lobbyId, gameName } = message;
+
+    if (!challengerId || !opponentId) {
+        return;
+    }
+
+    const challenger = connectedUsers.get(challengerId);
+    const opponent = connectedUsers.get(opponentId);
+
+        if (!challenger || !opponent) {
+            if (ctx.ws.readyState === WebSocket.OPEN) {
+                ctx.ws.send(
+                    JSON.stringify({
+                        type: 'match-start-error',
+                        challengerId,
+                        opponentId,
+                        reason: 'Opponent is no longer online.',
+                    })
+                );
+            }
+            return;
+        }
+
+    const matchId = randomUUID();
+    const resolvedLobbyId =
+        lobbyId ??
+        userLobby.get(challengerId) ??
+        userLobby.get(opponentId) ??
+        DEFAULT_LOBBY_ID;
+    const serverPort = Number(serverInfo.PUNCH_PORT ?? 0) || 33334;
+    const basePayload = {
+        type: 'match-start',
+        matchId,
+        lobbyId: resolvedLobbyId,
+        gameName: gameName ?? null,
+        serverHost: serverInfo.COTURN_IP,
+        serverPort,
+        requestedBy,
+    };
+
+    const sendMatchStart = (recipient: ConnectedUser, playerSlot: 0 | 1, opponentUid: string) => {
+        if (!recipient.ws || recipient.ws.readyState !== WebSocket.OPEN) {
+            return;
+        }
+
+        recipient.ws.send(
+            JSON.stringify({
+                ...basePayload,
+                playerSlot,
+                opponentUid,
+            })
+        );
+    };
+
+    sendMatchStart(challenger, 0, opponentId);
+    sendMatchStart(opponent, 1, challengerId);
 }
 
 async function handleSendMessage(sender: SocketUser | undefined, message: string, messageId?: string) {
