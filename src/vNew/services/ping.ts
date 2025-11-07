@@ -1,6 +1,6 @@
 import axios from 'axios';
 import geoip from 'fast-geoip';
-import geolib from 'geolib';
+import * as geolib from 'geolib';
 import { IncomingMessage } from 'http';
 
 import { connectedUsers } from '../state';
