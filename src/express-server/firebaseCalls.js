@@ -10,6 +10,31 @@ const db = getFirestore()
 const usersRef = db.collection('users')
 const logInUserRef = db.collection('logged-in')
 
+function sanitizeUserRecord(data) {
+    if (!data) return null
+    const allowedFields = [
+        'uid',
+        'userName',
+        'userProfilePic',
+        'userTitle',
+        'accountElo',
+        'countryCode',
+        'knownAliases',
+        'winstreak',
+        'lastKnownPings',
+        'pingLat',
+        'pingLon',
+        'gravEmail',
+    ]
+    const sanitized = {}
+    allowedFields.forEach((field) => {
+        if (data[field] !== undefined) {
+            sanitized[field] = data[field]
+        }
+    })
+    return sanitized
+}
+
 async function addLoggedInUser(userEmail, token) {
     if (userEmail && token) {
         await logInUserRef.doc(userEmail).set({
@@ -128,8 +153,8 @@ async function getUserData(uid) {
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
     if (!querySnapshot.empty) {
         const doc = querySnapshot.docs[0]
-        const { userEmail, ...filteredData } = doc.data() // exclude uid and email
-        return filteredData
+        const { userEmail, ...filteredData } = doc.data() // exclude email
+        return sanitizeUserRecord(filteredData)
     } else {
         return null
     }
@@ -420,6 +445,89 @@ async function getAllTitles(uid) {
     }
 }
 
+async function searchUsers(query = '', limit = 25, cursorName = null) {
+    const normalizedQuery = (query || '').trim()
+    const pageSize = Math.min(Number(limit) || 25, 50)
+    let ref = usersRef.orderBy('userName')
+    if (normalizedQuery) {
+        const end = `${normalizedQuery}\uf8ff`
+        ref = ref.where('userName', '>=', normalizedQuery).where('userName', '<=', end)
+    }
+    if (cursorName) {
+        ref = ref.startAfter(cursorName)
+    }
+    const snapshot = await ref.limit(pageSize).get()
+    if (snapshot.empty) {
+        return { users: [], nextCursor: null }
+    }
+    const users = snapshot.docs.map((doc) => sanitizeUserRecord(doc.data())).filter(Boolean)
+    const lastDoc = snapshot.docs[snapshot.docs.length - 1]
+    return {
+        users,
+        nextCursor: lastDoc ? lastDoc.get('userName') : null,
+    }
+}
+
+async function getLeaderboard(sortBy = 'elo', limit = 25, cursorValue = null) {
+    const pageSize = Math.min(Number(limit) || 25, 50)
+    if (sortBy === 'wins') {
+        let statsRef = db.collection('player-stats').orderBy('totalWins', 'desc')
+        if (cursorValue !== undefined && cursorValue !== null) {
+            statsRef = statsRef.startAfter(Number(cursorValue))
+        }
+        const snapshot = await statsRef.limit(pageSize).get()
+        if (snapshot.empty) {
+            return { entries: [], nextCursor: null }
+        }
+        const entries = []
+        for (const doc of snapshot.docs) {
+            const stats = doc.data() || {}
+            const user = await getUserData(doc.id)
+            if (user) {
+                entries.push({
+                    user,
+                    stats: {
+                        totalWins: stats.totalWins || 0,
+                        totalLosses: stats.totalLosses || 0,
+                        totalGames: stats.totalGames || 0,
+                    },
+                })
+            }
+        }
+        const lastDoc = snapshot.docs[snapshot.docs.length - 1]
+        return {
+            entries,
+            nextCursor: lastDoc ? lastDoc.get('totalWins') : null,
+        }
+    }
+
+    let userRef = usersRef.orderBy('accountElo', 'desc')
+    if (cursorValue !== undefined && cursorValue !== null) {
+        userRef = userRef.startAfter(Number(cursorValue))
+    }
+    const snapshot = await userRef.limit(pageSize).get()
+    if (snapshot.empty) {
+        return { entries: [], nextCursor: null }
+    }
+    const entries = snapshot.docs
+        .map((doc) => {
+            const user = sanitizeUserRecord(doc.data())
+            if (!user) return null
+            return {
+                user,
+                stats: {
+                    accountElo: doc.get('accountElo') || 0,
+                },
+            }
+        })
+        .filter(Boolean)
+    const lastDoc = snapshot.docs[snapshot.docs.length - 1]
+    return {
+        entries,
+        nextCursor: lastDoc ? lastDoc.get('accountElo') : null,
+    }
+}
+
 async function getUserName(uid) {
     if (!uid) return
     const querySnapshot = await usersRef.where('uid', '==', uid).get()
@@ -500,4 +608,6 @@ module.exports = {
     removeLoggedInUser,
     fetchLoggedInUser,
     addLoggedInUser,
+    searchUsers,
+    getLeaderboard,
 }

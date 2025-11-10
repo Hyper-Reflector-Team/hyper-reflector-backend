@@ -318,6 +318,30 @@ app.post('/get-player-stats', async (req, res) => {
     }
 })
 
+app.post('/search-users', async (req, res) => {
+    try {
+        await getAuth().verifyIdToken(req.body.idToken)
+        const { query, limit, cursor } = req.body
+        const result = await api.searchUsers(query, limit, cursor)
+        return res.json(result)
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/get-leaderboard', async (req, res) => {
+    try {
+        await getAuth().verifyIdToken(req.body.idToken)
+        const { sortBy, limit, cursor } = req.body
+        const result = await api.getLeaderboard(sortBy, limit, cursor)
+        return res.json(result)
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
 app.post('/get-titles', async (req, res) => {
     try {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
