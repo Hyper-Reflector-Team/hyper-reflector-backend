@@ -1,4 +1,5 @@
 const express = require('express')
+const rateLimit = require('express-rate-limit')
 const app = express()
 const port = 8080 // 8888 for local
 // firebase
@@ -15,6 +16,14 @@ initializeApp({
 const api = require('./firebaseCalls')
 
 app.use(express.json()) // for parsing application/json
+const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' },
+})
+app.use(apiLimiter)
 
 // SERVER
 //expects a user token from firebase auth to verify
@@ -73,8 +82,16 @@ app.post('/log-out', (req, res) => {
 
 // insecure? - need to test more
 app.post('/log-out-internal', (req, res) => {
-    // if user cannot be verified kick them out of the request
-    api.removeLoggedInUser(req.body.userEmail)
+    getAuth()
+        .verifyIdToken(req.body.idToken)
+        .then(() => {
+            api.removeLoggedInUser(req.body.userEmail)
+            res.status(200).send('Logged out')
+        })
+        .catch((err) => {
+            console.log('unauthorized log-out-internal call', err)
+            res.status(403).send('Forbidden')
+        })
 })
 
 //profile api
