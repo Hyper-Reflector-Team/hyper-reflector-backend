@@ -12,7 +12,7 @@ const logInUserRef = db.collection('logged-in')
 
 function sanitizeUserRecord(data) {
     if (!data) return null
-    const allowedFields = [
+const allowedFields = [
         'uid',
         'userName',
         'userProfilePic',
@@ -25,6 +25,8 @@ function sanitizeUserRecord(data) {
         'pingLat',
         'pingLon',
         'gravEmail',
+        'role',
+        'assignedFlairs',
     ]
     const sanitized = {}
     allowedFields.forEach((field) => {
@@ -445,6 +447,108 @@ async function getAllTitles(uid) {
     }
 }
 
+function normalizeFlair(flair) {
+    if (!flair || typeof flair !== 'object') return null
+    const title =
+        typeof flair.title === 'string' && flair.title.trim().length
+            ? flair.title.trim()
+            : null
+    if (!title) {
+        return null
+    }
+    return {
+        title,
+        bgColor:
+            typeof flair.bgColor === 'string' && flair.bgColor.trim().length
+                ? flair.bgColor
+                : '#1f1f24',
+        color:
+            typeof flair.color === 'string' && flair.color.trim().length
+                ? flair.color
+                : '#f2f2f7',
+        border:
+            typeof flair.border === 'string' && flair.border.trim().length
+                ? flair.border
+                : '#37373f',
+    }
+}
+
+async function createTitleFlair(flair) {
+    const normalized = normalizeFlair(flair)
+    if (!normalized) return null
+    const titleCollectionRef = db.collection('titles').doc('data')
+    const doc = await titleCollectionRef.get()
+    const existing = Array.isArray(doc.data()?.titles) ? doc.data().titles : []
+    const alreadyExists = existing.some((entry) => entry.title === normalized.title)
+    if (alreadyExists) {
+        return normalized
+    }
+    const updated = [...existing, normalized]
+    await titleCollectionRef.set({ titles: updated }, { merge: true })
+    return normalized
+}
+
+async function assignTitleFlair(targetUid, flair) {
+    if (!targetUid) return false
+    const normalized = normalizeFlair(flair)
+    if (!normalized) return false
+    const snapshot = await usersRef.where('uid', '==', targetUid).limit(1).get()
+    if (snapshot.empty) return false
+    await snapshot.docs[0].ref.update({
+        userTitle: normalized,
+        assignedFlairs: FieldValue.arrayUnion(normalized),
+    })
+    return true
+}
+
+async function addAssignedFlair(targetUid, flair) {
+    if (!targetUid) return false
+    const normalized = normalizeFlair(flair)
+    if (!normalized) return false
+    const snapshot = await usersRef.where('uid', '==', targetUid).limit(1).get()
+    if (snapshot.empty) return false
+    await snapshot.docs[0].ref.update({
+        assignedFlairs: FieldValue.arrayUnion(normalized),
+    })
+    return true
+}
+
+const conditionalCollectionRef = db.collection('conditional-flairs').doc('data')
+
+async function createConditionalFlair(flair) {
+    const normalized = normalizeFlair(flair)
+    if (!normalized) return null
+    const doc = await conditionalCollectionRef.get()
+    const existing = Array.isArray(doc.data()?.flairs) ? doc.data().flairs : []
+    const alreadyExists = existing.some((entry) => entry.title === normalized.title)
+    if (alreadyExists) {
+        return normalized
+    }
+    const updated = [...existing, normalized]
+    await conditionalCollectionRef.set({ flairs: updated }, { merge: true })
+    return normalized
+}
+
+async function getConditionalFlairs() {
+    const doc = await conditionalCollectionRef.get()
+    if (!doc.exists) return []
+    const data = doc.data()
+    if (!data) return []
+    return Array.isArray(data.flairs) ? data.flairs : []
+}
+
+async function grantConditionalFlair(targetUid, flair) {
+    return addAssignedFlair(targetUid, flair)
+}
+
+async function isAdminUser(uid) {
+    if (!uid) return false
+    const snapshot = await usersRef.where('uid', '==', uid).limit(1).get()
+    if (snapshot.empty) return false
+    const data = snapshot.docs[0].data()
+    return typeof data.role === 'string' && data.role.toLowerCase() === 'admin'
+}
+
 async function searchUsers(query = '', limit = 25, cursorName = null) {
     const normalizedQuery = (query || '').trim()
     const pageSize = Math.min(Number(limit) || 25, 50)
@@ -610,4 +714,11 @@ module.exports = {
     addLoggedInUser,
     searchUsers,
     getLeaderboard,
+    createTitleFlair,
+    assignTitleFlair,
+    isAdminUser,
+    createConditionalFlair,
+    getConditionalFlairs,
+    grantConditionalFlair,
+    addAssignedFlair,
 }

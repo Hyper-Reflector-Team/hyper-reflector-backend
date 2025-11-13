@@ -381,6 +381,91 @@ app.post('/get-titles', async (req, res) => {
     }
 })
 
+app.post('/admin/create-title-flair', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const created = await api.createTitleFlair(req.body.flair)
+        if (!created) {
+            return res.status(400).json({ error: 'Invalid flair payload' })
+        }
+
+        return res.json({ flair: created })
+    } catch (err) {
+        console.error('create-title-flair failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/get-conditional-flairs', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const flairs = await api.getConditionalFlairs()
+        return res.json({ flairs })
+    } catch (err) {
+        console.error('get-conditional-flairs failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/grant-conditional-flair', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const { targetUid, flair } = req.body
+        if (!targetUid) {
+            return res.status(400).json({ error: 'targetUid is required' })
+        }
+
+        const assigned = await api.grantConditionalFlair(targetUid, flair)
+        if (!assigned) {
+            return res.status(404).json({ error: 'User not found or flair invalid' })
+        }
+
+        return res.json({ success: true })
+    } catch (err) {
+        console.error('grant-conditional-flair failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/create-conditional-flair', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const created = await api.createConditionalFlair(req.body.flair)
+        if (!created) {
+            return res.status(400).json({ error: 'Invalid flair payload' })
+        }
+
+        return res.json({ flair: created })
+    } catch (err) {
+        console.error('create-conditional-flair failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
 // init listen
 app.listen(port, () => {
     console.log(`v2 firebase api on port ${port}`)

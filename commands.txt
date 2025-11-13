@@ -47,8 +47,5 @@ we have to install pm2 and bun globally
 pm2 start <file path>
 
 
--- security considerations
-we should enable ufw to firewall all bad ports and connections
-
--- adding ssh for users ?
+-- adding ssh for users
 https://dev.to/koddr/quick-how-to-clone-your-private-repository-from-github-to-server-droplet-vds-etc-39jm
