@@ -5,16 +5,89 @@ import {
     HEARTBEAT_INTERVAL_MS,
     HEARTBEAT_TERMINATE_AFTER_MS,
     SIGNAL_PORT,
+    DEFAULT_LOBBY_ID,
 } from './config';
 import { handleMessage } from './message-handler';
 import { connectedUsers, userLobby } from './state';
 import { AugmentedWebSocket, MessageContext, SignalMessage } from './types';
-import { removeUserFromAllLobbies, broadcastLobbyCounts } from './services/lobby';
+import {
+    removeUserFromAllLobbies,
+    broadcastLobbyCounts,
+    broadcastUserList,
+    syncUserToLobby,
+} from './services/lobby';
 
 const serverInfo = require('../../keys/server');
 
 const server = http.createServer();
 const wss = new WebSocketServer({ noServer: true });
+
+function readRequestBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+        req.on('error', reject);
+    });
+}
+
+async function handleInternalWinStreakUpdate(req: http.IncomingMessage, res: http.ServerResponse) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+    }
+
+    try {
+        const rawBody = await readRequestBody(req);
+        const payload = rawBody ? JSON.parse(rawBody) : {};
+        const { uid, winStreak } = payload as { uid?: string; winStreak?: number };
+        if (!uid || typeof winStreak !== 'number') {
+            res.statusCode = 400;
+            res.end('Invalid payload');
+            return;
+        }
+
+        const user = connectedUsers.get(uid);
+        if (!user) {
+            res.statusCode = 200;
+            res.end(JSON.stringify({ updated: false }));
+            return;
+        }
+
+        const updatedUser = {
+            ...user,
+            winStreak,
+            winstreak: winStreak,
+        };
+        connectedUsers.set(uid, updatedUser);
+
+        const lobbyId = userLobby.get(uid) ?? user.lobbyId ?? DEFAULT_LOBBY_ID;
+        syncUserToLobby(uid, lobbyId);
+        broadcastUserList(lobbyId);
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ updated: true }));
+    } catch (error) {
+        console.error('Failed to process internal win streak update', error);
+        res.statusCode = 500;
+        res.end('Internal error');
+    }
+}
+
+server.on('request', (req, res) => {
+    if (req.method === 'POST' && req.url === '/internal/win-streak') {
+        void handleInternalWinStreakUpdate(req, res);
+        return;
+    }
+
+    res.statusCode = 404;
+    res.end('Not found');
+});
 
 server.on('upgrade', (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => {

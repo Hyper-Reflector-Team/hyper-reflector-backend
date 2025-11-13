@@ -7,6 +7,7 @@ export interface SocketUser {
     displayName?: string;
     lobbyId?: string;
     winStreak?: number;
+    winstreak?: number;
     stability?: boolean;
     [key: string]: unknown;
 }

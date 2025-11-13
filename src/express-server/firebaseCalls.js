@@ -1,14 +1,19 @@
 const { getAuth } = require('firebase-admin/auth')
 const { getFirestore, FieldValue } = require('firebase-admin/firestore')
 const gravatar = require('gravatar.js')
+const axios = require('axios')
 const dataConverter = require('./data')
 const { calculateNewElo } = require('./utils')
+const serverInfo = require('../../keys/server.ts')
 
 // firebase related commands
 const db = getFirestore()
 
 const usersRef = db.collection('users')
 const logInUserRef = db.collection('logged-in')
+const winStreaksRef = db.collection('user-win-streaks')
+const SIGNAL_PORT = process.env.VNEW_SIGNAL_PORT || serverInfo?.SIGNAL_PORT || '3004'
+const SIGNAL_HOST = process.env.VNEW_SIGNAL_HOST || serverInfo?.COTURN_IP || '127.0.0.1'
 
 function sanitizeUserRecord(data) {
     if (!data) return null
@@ -21,6 +26,7 @@ const allowedFields = [
         'countryCode',
         'knownAliases',
         'winstreak',
+        'longestWinStreak',
         'lastKnownPings',
         'pingLat',
         'pingLon',
@@ -35,6 +41,75 @@ const allowedFields = [
         }
     })
     return sanitized
+}
+
+async function getUserDocByUid(uid) {
+    if (!uid) return null
+    const snapshot = await usersRef.where('uid', '==', uid).limit(1).get()
+    if (snapshot.empty) return null
+    return snapshot.docs[0]
+}
+
+async function upsertUserWinStreak(uid, current, longest) {
+    if (!uid) return
+    const userDoc = await getUserDocByUid(uid)
+    if (userDoc) {
+        await userDoc.ref.set(
+            {
+                winstreak: current,
+                longestWinStreak: longest,
+            },
+            { merge: true }
+        )
+    }
+}
+
+async function updateWinStreakRecord(uid, playerWon) {
+    if (!uid) return null
+    const result = await db.runTransaction(async (transaction) => {
+        const docRef = winStreaksRef.doc(uid)
+        const snapshot = await transaction.get(docRef)
+        const data = snapshot.exists ? snapshot.data() : {}
+        const safeCurrent = typeof data.current === 'number' ? data.current : 0
+        const safeLongest = typeof data.longest === 'number' ? data.longest : 0
+        const nextCurrent = playerWon ? safeCurrent + 1 : 0
+        const nextLongest = Math.max(nextCurrent, safeLongest)
+        transaction.set(
+            docRef,
+            {
+                current: nextCurrent,
+                longest: nextLongest,
+                lastResult: playerWon ? 'win' : 'loss',
+                updatedAt: Date.now(),
+            },
+            { merge: true }
+        )
+        return { current: nextCurrent, longest: nextLongest }
+    })
+    await upsertUserWinStreak(uid, result.current, result.longest)
+    return result
+}
+
+async function notifySocketWinStreak(uid, winStreak) {
+    if (!uid || typeof winStreak !== 'number') return
+    try {
+        await axios.post(
+            `http://${SIGNAL_HOST}:${SIGNAL_PORT}/internal/win-streak`,
+            {
+                uid,
+                winStreak,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                },
+                timeout: 2500,
+            }
+        )
+    } catch (error) {
+        console.warn('Failed to notify websocket server about win streak update', error.message || error)
+    }
 }
 
 async function addLoggedInUser(userEmail, token) {
@@ -269,6 +344,22 @@ async function uploadMatchData(matchData, uid) {
 
     const p1Won = matchResult === '1'
 
+    const streakUpdates = new Map()
+    const streakPairs = [
+        { uid: matchData.player1, didWin: matchResult === '1' },
+        { uid: matchData.player2, didWin: matchResult === '2' },
+    ]
+
+    await Promise.all(
+        streakPairs.map(async ({ uid, didWin }) => {
+            if (!uid) return
+            const result = await updateWinStreakRecord(uid, didWin)
+            if (result) {
+                streakUpdates.set(uid, result)
+            }
+        })
+    )
+
     const newP1Elo = calculateNewElo(player1Elo, player2Elo, p1Won)
     const newP2Elo = calculateNewElo(player2Elo, player1Elo, !p1Won)
 
@@ -305,6 +396,7 @@ async function uploadMatchData(matchData, uid) {
         const character = whichPlayer === '1' ? p1Char : p2Char
         const superIndex = whichPlayer === '1' ? parsed['player1-super'] : parsed['player2-super']
         const accountElo = whichPlayer === '1' ? newP1Elo : newP2Elo
+        const streakInfo = streakUpdates.get(player) || null
         batch.set(
             statsRef,
             {
@@ -312,7 +404,10 @@ async function uploadMatchData(matchData, uid) {
                 totalGames: FieldValue.increment(1),
                 totalWins: playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
                 totalLosses: !playerWon ? FieldValue.increment(1) : FieldValue.increment(0),
-                winStreak: playerWon ? FieldValue.increment(1) : 0, // if lost, reset streak
+                winStreak: streakInfo ? streakInfo.current : 0,
+                longestWinStreak: streakInfo
+                    ? streakInfo.longest
+                    : FieldValue.increment(0),
                 // send data back to increase streak on websocket end
                 characters: {
                     [`${character}`]: {
@@ -338,6 +433,12 @@ async function uploadMatchData(matchData, uid) {
     }
 
     await batch.commit()
+
+    if (streakUpdates.size) {
+        await Promise.allSettled(
+            [...streakUpdates.entries()].map(([uid, info]) => notifySocketWinStreak(uid, info.current))
+        )
+    }
 
     // Update global stats
     const globalStatsRef = db.collection('global-stats').doc('global-match-stats')

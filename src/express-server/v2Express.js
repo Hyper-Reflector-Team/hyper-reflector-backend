@@ -225,20 +225,18 @@ app.post('/get-custom-token', async (req, res) => {
 })
 
 // match related
-app.post('/upload-match', (req, res) => {
+app.post('/upload-match', async (req, res) => {
     console.log('someone is trying to upload a match')
-    // if user cannot be verified kick them out of the request
-    getAuth()
-        .verifyIdToken(req.body.idToken)
-        .then((decodedToken) => {
-            const uid = decodedToken.uid
-            // add user to logged in users collection
-            const data = req.body
-            api.uploadMatchData(data, uid)
-        })
-        .catch((err) => {
-            console.log('user touched api without being logged in', err)
-        })
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const data = req.body
+        await api.uploadMatchData(data, uid)
+        res.status(200).json({ ok: true })
+    } catch (err) {
+        console.log('user touched api without being logged in', err)
+        res.status(403).json({ error: 'unauthorized' })
+    }
 })
 
 app.post('/get-user-matches', async (req, res) => {

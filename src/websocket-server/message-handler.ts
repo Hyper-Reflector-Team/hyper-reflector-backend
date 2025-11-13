@@ -109,9 +109,17 @@ async function handleUpdateSocketState(
     let updatedUserProps: Record<string, unknown>;
 
     if (data.stateToUpdate.key === 'winStreak') {
-        const currentStreak = userToUpdate.winStreak || 0;
+        const rawValue = data.stateToUpdate.value as number | string | undefined;
+        const nextValue =
+            typeof rawValue === 'number'
+                ? rawValue
+                : typeof rawValue === 'string'
+                    ? Number(rawValue)
+                    : 0;
+        const safeValue = Number.isFinite(nextValue) ? Math.max(0, nextValue) : 0;
         updatedUserProps = {
-            winStreak: data.stateToUpdate.value === 1 ? currentStreak + 1 : 0,
+            winStreak: safeValue,
+            winstreak: safeValue,
         };
     } else {
         updatedUserProps = {
