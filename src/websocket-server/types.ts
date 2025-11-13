@@ -55,6 +55,7 @@ export type SignalMessage =
           requestedBy: string;
           lobbyId?: string;
           gameName?: string;
+          preferredSlot?: 0 | 1;
       }
     | { type: 'userDisconnect'; userUID?: string }
     | { type: 'sendMessage'; sender: SocketUser; message: string; messageId?: string }
@@ -90,6 +91,25 @@ export type SignalMessage =
           to: string;
           from: string;
           measurementId: string;
+          reason?: string;
+      }
+    | {
+          type: 'mini-game-challenge';
+          challengerId: string;
+          opponentId: string;
+          gameType: 'rps';
+          sessionId?: string;
+      }
+    | {
+          type: 'mini-game-choice';
+          sessionId: string;
+          choice: 'rock' | 'paper' | 'scissors';
+          playerId: string;
+      }
+    | {
+          type: 'mini-game-decline';
+          sessionId: string;
+          playerId: string;
           reason?: string;
       };
 

@@ -152,6 +152,42 @@ app.post('/update-user-streak', async (req, res) => {
     res.status(200).send('Updated')
 })
 
+app.post('/mini-game/rps-result', async (req, res) => {
+    const authHeader = req.headers['authorization']
+    const token = authHeader && authHeader.split(' ')[1]
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        return res.status(403).send('Forbidden')
+    }
+
+    try {
+        const result = await api.recordRpsResult({
+            challengerUid: req.body.challengerUid,
+            opponentUid: req.body.opponentUid,
+            winnerUid: req.body.winnerUid,
+        })
+        res.status(200).json(result)
+    } catch (error) {
+        console.error('Failed to record RPS result', error)
+        res.status(500).json({ error: 'rps-result-failed' })
+    }
+})
+
+app.post('/mini-game/side-selection', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        if (!decodedToken?.uid) return res.status(403).json({ error: 'unauthorized' })
+        const result = await api.setSidePreference(decodedToken.uid, req.body.opponentUid, req.body.side)
+        if (!result) {
+            return res.status(400).json({ error: 'failed-to-set-preference' })
+        }
+        res.status(200).json(result)
+    } catch (error) {
+        console.error('Failed to set side preference', error)
+        res.status(500).json({ error: 'side-preference-failed' })
+    }
+})
+
 app.post('/get-user-data', async (req, res) => {
     try {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)

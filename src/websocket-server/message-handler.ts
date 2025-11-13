@@ -19,9 +19,29 @@ import { DEFAULT_LOBBY_ID } from './config';
 import { handleEstimatePing, populateGeoForUser } from './services/ping';
 
 const serverInfo = require('../../keys/server');
+type MiniGameChoice = 'rock' | 'paper' | 'scissors';
+
+type MiniGameSession = {
+    id: string;
+    challengerId: string;
+    opponentId: string;
+    createdAt: number;
+    expiresAt: number;
+    gameType: 'rps';
+    choices: Record<string, MiniGameChoice>;
+    timeout?: NodeJS.Timeout;
+};
+
+const miniGameSessions = new Map<string, MiniGameSession>();
 
 function sanitizeUsers() {
     return [...connectedUsers.values()].map(({ ws, ...user }) => user);
+}
+
+function sendToUser(uid: string, payload: unknown) {
+    const target = connectedUsers.get(uid);
+    if (!target?.ws || target.ws.readyState !== WebSocket.OPEN) return;
+    target.ws.send(JSON.stringify(payload));
 }
 
 export async function handleMessage(ctx: MessageContext, message: SignalMessage) {
@@ -64,6 +84,15 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'estimate-ping-users':
             await handleEstimatePing(ctx, message.data);
+            break;
+        case 'mini-game-challenge':
+            await handleMiniGameChallenge(message);
+            break;
+        case 'mini-game-choice':
+            await handleMiniGameChoice(message);
+            break;
+        case 'mini-game-decline':
+            await handleMiniGameDecline(message);
             break;
         default:
             ctx.logger.warn('Unhandled message type', message);
@@ -242,7 +271,7 @@ async function handleRequestMatch(
     ctx: MessageContext,
     message: Extract<SignalMessage, { type: 'request-match' }>
 ) {
-    const { challengerId, opponentId, requestedBy, lobbyId, gameName } = message;
+    const { challengerId, opponentId, requestedBy, lobbyId, gameName, preferredSlot } = message;
 
     if (!challengerId || !opponentId) {
         return;
@@ -296,8 +325,11 @@ async function handleRequestMatch(
         );
     };
 
-    sendMatchStart(challenger, 0, opponentId);
-    sendMatchStart(opponent, 1, challengerId);
+    const challengerSlot = preferredSlot === 1 ? 1 : 0;
+    const opponentSlot = challengerSlot === 0 ? 1 : 0;
+
+    sendMatchStart(challenger, challengerSlot, opponentId);
+    sendMatchStart(opponent, opponentSlot, challengerId);
 }
 
 async function handleSendMessage(sender: SocketUser | undefined, message: string, messageId?: string) {
@@ -340,4 +372,166 @@ function forwardWebRtc(message: Extract<
     if (targetUser.ws.readyState !== WebSocket.OPEN) return;
 
     targetUser.ws.send(JSON.stringify(message));
+}
+
+const RPS_RULES: Record<MiniGameChoice, MiniGameChoice> = {
+    rock: 'scissors',
+    paper: 'rock',
+    scissors: 'paper',
+};
+
+async function handleMiniGameChallenge(message: Extract<SignalMessage, { type: 'mini-game-challenge' }>) {
+    const { challengerId, opponentId, gameType } = message;
+    if (gameType !== 'rps') return;
+    if (!challengerId || !opponentId || challengerId === opponentId) return;
+    const challenger = connectedUsers.get(challengerId);
+    const opponent = connectedUsers.get(opponentId);
+    if (!challenger || !opponent) return;
+
+    const id = message.sessionId || randomUUID();
+    const now = Date.now();
+    const expiresAt = now + 10_000;
+    const session: MiniGameSession = {
+        id,
+        challengerId,
+        opponentId,
+        createdAt: now,
+        expiresAt,
+        gameType: 'rps',
+        choices: {},
+    };
+    session.timeout = setTimeout(() => {
+        finalizeMiniGameSession(id, 'timeout');
+    }, expiresAt - now + 100);
+    miniGameSessions.set(id, session);
+    const payload = {
+        type: 'mini-game-challenge',
+        sessionId: id,
+        challengerId,
+        opponentId,
+        gameType: 'rps',
+        expiresAt,
+    };
+    sendToUser(challengerId, payload);
+    sendToUser(opponentId, payload);
+}
+
+async function handleMiniGameChoice(message: Extract<SignalMessage, { type: 'mini-game-choice' }>) {
+    const session = miniGameSessions.get(message.sessionId);
+    if (!session) return;
+    if (![session.challengerId, session.opponentId].includes(message.playerId)) return;
+    if (Date.now() > session.expiresAt) {
+        finalizeMiniGameSession(session.id, 'timeout');
+        return;
+    }
+    session.choices[message.playerId] = message.choice;
+    if (session.choices[session.challengerId] && session.choices[session.opponentId]) {
+        finalizeMiniGameSession(session.id, 'complete');
+    }
+}
+
+async function handleMiniGameDecline(message: Extract<SignalMessage, { type: 'mini-game-decline' }>) {
+    const session = miniGameSessions.get(message.sessionId);
+    if (!session) return;
+    finalizeMiniGameSession(session.id, 'declined', message.playerId);
+}
+
+function evaluateRpsChoices(
+    challengerChoice?: MiniGameChoice,
+    opponentChoice?: MiniGameChoice
+): { winnerUid?: string; loserUid?: string; outcome: 'win' | 'draw' | 'forfeit' } {
+    if (!challengerChoice && !opponentChoice) {
+        return { outcome: 'draw' };
+    }
+    if (challengerChoice && !opponentChoice) {
+        return { winnerUid: 'challenger', loserUid: 'opponent', outcome: 'forfeit' };
+    }
+    if (!challengerChoice && opponentChoice) {
+        return { winnerUid: 'opponent', loserUid: 'challenger', outcome: 'forfeit' };
+    }
+    if (!challengerChoice || !opponentChoice) {
+        return { outcome: 'draw' };
+    }
+    if (challengerChoice === opponentChoice) {
+        return { outcome: 'draw' };
+    }
+    const challengerWins = RPS_RULES[challengerChoice] === opponentChoice;
+    return challengerWins
+        ? { winnerUid: 'challenger', loserUid: 'opponent', outcome: 'win' }
+        : { winnerUid: 'opponent', loserUid: 'challenger', outcome: 'win' };
+}
+
+async function finalizeMiniGameSession(
+    sessionId: string,
+    reason: 'complete' | 'timeout' | 'declined',
+    actorId?: string
+) {
+    const session = miniGameSessions.get(sessionId);
+    if (!session) return;
+    if (session.timeout) {
+        clearTimeout(session.timeout);
+    }
+    miniGameSessions.delete(sessionId);
+
+    const challengerChoice = session.choices[session.challengerId];
+    const opponentChoice = session.choices[session.opponentId];
+    let winnerUid: string | undefined;
+    let loserUid: string | undefined;
+    let outcome: 'win' | 'draw' | 'forfeit' | 'declined' = 'draw';
+
+    if (reason === 'declined') {
+        outcome = 'declined';
+    } else {
+        const evaluation = evaluateRpsChoices(challengerChoice, opponentChoice);
+        outcome = evaluation.outcome;
+        if (evaluation.winnerUid === 'challenger') {
+            winnerUid = session.challengerId;
+            loserUid = session.opponentId;
+        } else if (evaluation.winnerUid === 'opponent') {
+            winnerUid = session.opponentId;
+            loserUid = session.challengerId;
+        }
+    }
+
+    const basePayload: any = {
+        type: 'mini-game-result',
+        sessionId: session.id,
+        challengerId: session.challengerId,
+        opponentId: session.opponentId,
+        gameType: session.gameType,
+        choices: {
+            [session.challengerId]: challengerChoice || null,
+            [session.opponentId]: opponentChoice || null,
+        },
+        winnerUid: reason === 'declined' ? undefined : winnerUid,
+        loserUid: reason === 'declined' ? undefined : loserUid,
+        outcome,
+        actorId,
+    };
+
+    if (winnerUid && loserUid && outcome !== 'draw') {
+        try {
+            const result = await axios.post(
+                `http://${serverInfo.COTURN_IP}:${serverInfo.API_PORT}/mini-game/rps-result`,
+                {
+                    challengerUid: session.challengerId,
+                    opponentUid: session.opponentId,
+                    winnerUid,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${serverInfo.SERVER_SECRET}`,
+                    },
+                }
+            );
+            if (result?.data?.ratings) {
+                basePayload.ratings = result.data.ratings;
+            }
+        } catch (error) {
+            console.error('Failed to sync RPS elo', error);
+        }
+    }
+
+    sendToUser(session.challengerId, basePayload);
+    sendToUser(session.opponentId, basePayload);
 }

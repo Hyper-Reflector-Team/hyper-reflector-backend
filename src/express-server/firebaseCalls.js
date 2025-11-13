@@ -14,6 +14,7 @@ const logInUserRef = db.collection('logged-in')
 const winStreaksRef = db.collection('user-win-streaks')
 const SIGNAL_PORT = process.env.VNEW_SIGNAL_PORT || serverInfo?.SIGNAL_PORT || '3004'
 const SIGNAL_HOST = process.env.VNEW_SIGNAL_HOST || serverInfo?.COTURN_IP || '127.0.0.1'
+const DEFAULT_RPS_ELO = 1200
 
 function sanitizeUserRecord(data) {
     if (!data) return null
@@ -33,6 +34,8 @@ const allowedFields = [
         'gravEmail',
         'role',
         'assignedFlairs',
+        'rpsElo',
+        'sidePreferences',
     ]
     const sanitized = {}
     allowedFields.forEach((field) => {
@@ -40,7 +43,30 @@ const allowedFields = [
             sanitized[field] = data[field]
         }
     })
+    if (sanitized.winStreak === undefined && typeof data.winstreak === 'number') {
+        sanitized.winStreak = data.winstreak
+    }
+    delete sanitized.winstreak
+    sanitized.sidePreferences = sanitizeSidePreferencesMap(data.sidePreferences)
     return sanitized
+}
+
+function sanitizeSidePreferencesMap(input) {
+    if (!input || typeof input !== 'object') return {}
+    const now = Date.now()
+    return Object.entries(input).reduce((acc, [key, value]) => {
+        if (!value || typeof value !== 'object') return acc
+        const side = value.side === 'player2' ? 'player2' : value.side === 'player1' ? 'player1' : null
+        const expiresAt = typeof value.expiresAt === 'number' ? value.expiresAt : 0
+        if (!side || expiresAt <= now) return acc
+        const ownerUid =
+            typeof value.ownerUid === 'string' && value.ownerUid.length ? value.ownerUid : ''
+        const opponentUid =
+            typeof value.opponentUid === 'string' && value.opponentUid.length ? value.opponentUid : key
+        if (!ownerUid || !opponentUid) return acc
+        acc[key] = { side, ownerUid, opponentUid, expiresAt }
+        return acc
+    }, {})
 }
 
 async function getUserDocByUid(uid) {
@@ -48,6 +74,16 @@ async function getUserDocByUid(uid) {
     const snapshot = await usersRef.where('uid', '==', uid).limit(1).get()
     if (snapshot.empty) return null
     return snapshot.docs[0]
+}
+
+function resolveRpsElo(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_RPS_ELO
+}
+
+function calculateEloRating(current, opponent, score, k = 32) {
+    const expected = 1 / (1 + Math.pow(10, (opponent - current) / 400))
+    const nextRating = current + k * (score - expected)
+    return Math.max(0, Math.round(nextRating))
 }
 
 async function upsertUserWinStreak(uid, current, longest) {
@@ -109,6 +145,80 @@ async function notifySocketWinStreak(uid, winStreak) {
         )
     } catch (error) {
         console.warn('Failed to notify websocket server about win streak update', error.message || error)
+    }
+}
+
+async function recordRpsResult({ challengerUid, opponentUid, winnerUid }) {
+    if (!challengerUid || !opponentUid) {
+        return { ratings: {} }
+    }
+    const [challengerDoc, opponentDoc] = await Promise.all([
+        getUserDocByUid(challengerUid),
+        getUserDocByUid(opponentUid),
+    ])
+    if (!challengerDoc || !opponentDoc) {
+        return { ratings: {} }
+    }
+    const challengerData = challengerDoc.data() || {}
+    const opponentData = opponentDoc.data() || {}
+    const challengerElo = resolveRpsElo(challengerData.rpsElo)
+    const opponentElo = resolveRpsElo(opponentData.rpsElo)
+    const challengerScore =
+        winnerUid === challengerUid ? 1 : winnerUid === opponentUid ? 0 : 0.5
+    const opponentScore = 1 - challengerScore
+    const nextChallenger = calculateEloRating(challengerElo, opponentElo, challengerScore)
+    const nextOpponent = calculateEloRating(opponentElo, challengerElo, opponentScore)
+
+    await Promise.all([
+        challengerDoc.ref.set({ rpsElo: nextChallenger }, { merge: true }),
+        opponentDoc.ref.set({ rpsElo: nextOpponent }, { merge: true }),
+    ])
+
+    return {
+        ratings: {
+            [challengerUid]: nextChallenger,
+            [opponentUid]: nextOpponent,
+        },
+    }
+}
+
+async function setSidePreference(ownerUid, opponentUid, side) {
+    if (!ownerUid || !opponentUid) return null
+    if (ownerUid === opponentUid) return null
+    const normalizedSide = side === 'player2' ? 'player2' : side === 'player1' ? 'player1' : null
+    if (!normalizedSide) return null
+
+    const [ownerDoc, opponentDoc] = await Promise.all([
+        getUserDocByUid(ownerUid),
+        getUserDocByUid(opponentUid),
+    ])
+    if (!ownerDoc || !opponentDoc) return null
+
+    const expiresAt = Date.now() + 60 * 60 * 1000
+    const ownerPrefs = sanitizeSidePreferencesMap(ownerDoc.data()?.sidePreferences || {})
+    const opponentPrefs = sanitizeSidePreferencesMap(opponentDoc.data()?.sidePreferences || {})
+
+    ownerPrefs[opponentUid] = {
+        side: normalizedSide,
+        ownerUid,
+        opponentUid,
+        expiresAt,
+    }
+    opponentPrefs[ownerUid] = {
+        side: normalizedSide === 'player1' ? 'player2' : 'player1',
+        ownerUid,
+        opponentUid: ownerUid,
+        expiresAt,
+    }
+
+    await Promise.all([
+        ownerDoc.ref.set({ sidePreferences: ownerPrefs }, { merge: true }),
+        opponentDoc.ref.set({ sidePreferences: opponentPrefs }, { merge: true }),
+    ])
+
+    return {
+        ownerEntry: ownerPrefs[opponentUid],
+        opponentEntry: opponentPrefs[ownerUid],
     }
 }
 
@@ -822,4 +932,6 @@ module.exports = {
     getConditionalFlairs,
     grantConditionalFlair,
     addAssignedFlair,
+    recordRpsResult,
+    setSidePreference,
 }
