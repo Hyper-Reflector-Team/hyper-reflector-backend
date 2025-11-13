@@ -7,7 +7,6 @@ export interface SocketUser {
     displayName?: string;
     lobbyId?: string;
     winStreak?: number;
-    winstreak?: number;
     stability?: boolean;
     [key: string]: unknown;
 }
@@ -64,7 +63,35 @@ export type SignalMessage =
     | { type: 'webrtc-ping-answer'; to: string; from: string; answer: unknown }
     | { type: 'webrtc-ping-decline'; to: string; from: string }
     | { type: 'webrtc-ping-candidate'; to: string; from: string; candidate: unknown }
-    | { type: 'estimate-ping-users'; data: EstimatePingUsersPayload };
+    | { type: 'estimate-ping-users'; data: EstimatePingUsersPayload }
+    | {
+          type: 'peer-latency-offer';
+          to: string;
+          from: string;
+          measurementId: string;
+          offer: unknown;
+      }
+    | {
+          type: 'peer-latency-answer';
+          to: string;
+          from: string;
+          measurementId: string;
+          answer: unknown;
+      }
+    | {
+          type: 'peer-latency-candidate';
+          to: string;
+          from: string;
+          measurementId: string;
+          candidate: unknown;
+      }
+    | {
+          type: 'peer-latency-decline';
+          to: string;
+          from: string;
+          measurementId: string;
+          reason?: string;
+      };
 
 export type MessageHandler = (ctx: MessageContext, message: SignalMessage) => Promise<void> | void;
 

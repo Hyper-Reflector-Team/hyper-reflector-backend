@@ -56,6 +56,12 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'webrtc-ping-candidate':
             forwardWebRtc(message);
             break;
+        case 'peer-latency-offer':
+        case 'peer-latency-answer':
+        case 'peer-latency-decline':
+        case 'peer-latency-candidate':
+            forwardWebRtc(message);
+            break;
         case 'estimate-ping-users':
             await handleEstimatePing(ctx, message.data);
             break;
@@ -119,7 +125,6 @@ async function handleUpdateSocketState(
         const safeValue = Number.isFinite(nextValue) ? Math.max(0, nextValue) : 0;
         updatedUserProps = {
             winStreak: safeValue,
-            winstreak: safeValue,
         };
     } else {
         updatedUserProps = {
@@ -317,10 +322,14 @@ function forwardWebRtc(message: Extract<
     SignalMessage,
     {
         type:
-        | 'webrtc-ping-offer'
-        | 'webrtc-ping-answer'
-        | 'webrtc-ping-decline'
-        | 'webrtc-ping-candidate';
+            | 'webrtc-ping-offer'
+            | 'webrtc-ping-answer'
+            | 'webrtc-ping-decline'
+            | 'webrtc-ping-candidate'
+            | 'peer-latency-offer'
+            | 'peer-latency-answer'
+            | 'peer-latency-decline'
+            | 'peer-latency-candidate';
     }
 >) {
     if (message.to === message.from) return;

@@ -61,7 +61,6 @@ async function handleInternalWinStreakUpdate(req: http.IncomingMessage, res: htt
         const updatedUser = {
             ...user,
             winStreak,
-            winstreak: winStreak,
         };
         connectedUsers.set(uid, updatedUser);
 

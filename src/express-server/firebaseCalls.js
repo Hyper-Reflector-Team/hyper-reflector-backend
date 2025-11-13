@@ -25,7 +25,7 @@ const allowedFields = [
         'accountElo',
         'countryCode',
         'knownAliases',
-        'winstreak',
+        'winStreak',
         'longestWinStreak',
         'lastKnownPings',
         'pingLat',
@@ -56,7 +56,7 @@ async function upsertUserWinStreak(uid, current, longest) {
     if (userDoc) {
         await userDoc.ref.set(
             {
-                winstreak: current,
+                winStreak: current,
                 longestWinStreak: longest,
             },
             { merge: true }
