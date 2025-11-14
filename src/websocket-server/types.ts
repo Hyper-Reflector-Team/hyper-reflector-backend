@@ -8,8 +8,16 @@ export interface SocketUser {
     lobbyId?: string;
     winStreak?: number;
     stability?: boolean;
+    mutedUsers?: string[];
     [key: string]: unknown;
 }
+
+export type SidePreferenceEntry = {
+    side: 'player1' | 'player2';
+    ownerUid: string;
+    opponentUid: string;
+    expiresAt: number;
+};
 
 export interface ConnectedUser extends SocketUser {
     ws: AugmentedWebSocket;
@@ -111,6 +119,16 @@ export type SignalMessage =
           sessionId: string;
           playerId: string;
           reason?: string;
+      }
+    | {
+          type: 'mini-game-accept';
+          sessionId: string;
+          playerId: string;
+      }
+    | {
+          type: 'mini-game-side-lock';
+          ownerEntry: SidePreferenceEntry;
+          opponentEntry?: SidePreferenceEntry;
       };
 
 export type MessageHandler = (ctx: MessageContext, message: SignalMessage) => Promise<void> | void;

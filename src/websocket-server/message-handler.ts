@@ -20,6 +20,9 @@ import { handleEstimatePing, populateGeoForUser } from './services/ping';
 
 const serverInfo = require('../../keys/server');
 const DEFAULT_RPS_ELO = 1200;
+const RPS_INVITE_WINDOW_MS = 30_000;
+const RPS_CHOICE_WINDOW_MS = 10_000;
+const RPS_COOLDOWN_MS = 60_000;
 type MiniGameChoice = 'rock' | 'paper' | 'scissors';
 
 type MiniGameSession = {
@@ -29,11 +32,17 @@ type MiniGameSession = {
     createdAt: number;
     expiresAt: number;
     gameType: 'rps';
+    phase: 'invite' | 'active';
     choices: Record<string, MiniGameChoice>;
     timeout?: NodeJS.Timeout;
 };
 
 const miniGameSessions = new Map<string, MiniGameSession>();
+const miniGamePairIndex = new Map<string, string>();
+const rpsChallengeCooldowns = new Map<string, number>();
+
+const getPairKey = (a: string, b: string) => [a, b].sort().join('::');
+const getDirectionalKey = (challengerId: string, opponentId: string) => `${challengerId}->${opponentId}`;
 
 function getUserRpsElo(uid: string) {
     const entry = connectedUsers.get(uid);
@@ -99,6 +108,12 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'mini-game-decline':
             await handleMiniGameDecline(message);
+            break;
+        case 'mini-game-accept':
+            await handleMiniGameAccept(ctx, message);
+            break;
+        case 'mini-game-side-lock':
+            await handleMiniGameSideLock(ctx, message);
             break;
         default:
             ctx.logger.warn('Unhandled message type', message);
@@ -394,9 +409,47 @@ async function handleMiniGameChallenge(message: Extract<SignalMessage, { type: '
     const opponent = connectedUsers.get(opponentId);
     if (!challenger || !opponent) return;
 
-    const id = message.sessionId || randomUUID();
     const now = Date.now();
-    const expiresAt = now + 10_000;
+    if (Array.isArray(opponent.mutedUsers) && opponent.mutedUsers.includes(challengerId)) {
+        sendToUser(challengerId, {
+            type: 'mini-game-challenge-denied',
+            reason: 'muted',
+            opponentId,
+            challengerId,
+        });
+        return;
+    }
+
+    const pairKey = getPairKey(challengerId, opponentId);
+    const activeSessionId = miniGamePairIndex.get(pairKey);
+    if (activeSessionId && miniGameSessions.has(activeSessionId)) {
+        sendToUser(challengerId, {
+            type: 'mini-game-challenge-denied',
+            reason: 'pending',
+            opponentId,
+            challengerId,
+        });
+        return;
+    }
+
+    const cooldownKey = getDirectionalKey(challengerId, opponentId);
+    const lastChallengeAt = rpsChallengeCooldowns.get(cooldownKey);
+    if (lastChallengeAt) {
+        const elapsed = now - lastChallengeAt;
+        if (elapsed < RPS_COOLDOWN_MS) {
+            sendToUser(challengerId, {
+                type: 'mini-game-challenge-denied',
+                reason: 'cooldown',
+                opponentId,
+                retryInMs: RPS_COOLDOWN_MS - elapsed,
+                challengerId,
+            });
+            return;
+        }
+    }
+
+    const id = message.sessionId || randomUUID();
+    const expiresAt = now + RPS_INVITE_WINDOW_MS;
     const session: MiniGameSession = {
         id,
         challengerId,
@@ -404,12 +457,14 @@ async function handleMiniGameChallenge(message: Extract<SignalMessage, { type: '
         createdAt: now,
         expiresAt,
         gameType: 'rps',
+        phase: 'invite',
         choices: {},
     };
     session.timeout = setTimeout(() => {
         finalizeMiniGameSession(id, 'timeout');
     }, expiresAt - now + 100);
     miniGameSessions.set(id, session);
+    miniGamePairIndex.set(pairKey, id);
     const payload = {
         type: 'mini-game-challenge',
         sessionId: id,
@@ -417,6 +472,7 @@ async function handleMiniGameChallenge(message: Extract<SignalMessage, { type: '
         opponentId,
         gameType: 'rps',
         expiresAt,
+        phase: 'invite',
     };
     sendToUser(challengerId, payload);
     sendToUser(opponentId, payload);
@@ -426,6 +482,9 @@ async function handleMiniGameChoice(message: Extract<SignalMessage, { type: 'min
     const session = miniGameSessions.get(message.sessionId);
     if (!session) return;
     if (![session.challengerId, session.opponentId].includes(message.playerId)) return;
+    if (session.phase !== 'active') {
+        return;
+    }
     if (Date.now() > session.expiresAt) {
         finalizeMiniGameSession(session.id, 'timeout');
         return;
@@ -434,6 +493,44 @@ async function handleMiniGameChoice(message: Extract<SignalMessage, { type: 'min
     if (session.choices[session.challengerId] && session.choices[session.opponentId]) {
         finalizeMiniGameSession(session.id, 'complete');
     }
+}
+
+async function handleMiniGameAccept(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'mini-game-accept' }>
+) {
+    const session = miniGameSessions.get(message.sessionId);
+    if (!session) return;
+    const requesterUid = ctx.ws.uid || message.playerId;
+    if (!requesterUid || requesterUid !== session.opponentId) {
+        return;
+    }
+    if (session.phase !== 'invite') {
+        return;
+    }
+    if (Date.now() > session.expiresAt) {
+        finalizeMiniGameSession(session.id, 'timeout');
+        return;
+    }
+    session.phase = 'active';
+    session.expiresAt = Date.now() + RPS_CHOICE_WINDOW_MS;
+    if (session.timeout) {
+        clearTimeout(session.timeout);
+    }
+    session.timeout = setTimeout(() => {
+        finalizeMiniGameSession(session.id, 'timeout');
+    }, RPS_CHOICE_WINDOW_MS + 100);
+    const payload = {
+        type: 'mini-game-challenge',
+        sessionId: session.id,
+        challengerId: session.challengerId,
+        opponentId: session.opponentId,
+        gameType: session.gameType,
+        expiresAt: session.expiresAt,
+        phase: session.phase,
+    };
+    sendToUser(session.challengerId, payload);
+    sendToUser(session.opponentId, payload);
 }
 
 async function handleMiniGameDecline(message: Extract<SignalMessage, { type: 'mini-game-decline' }>) {
@@ -478,6 +575,8 @@ async function finalizeMiniGameSession(
         clearTimeout(session.timeout);
     }
     miniGameSessions.delete(sessionId);
+    miniGamePairIndex.delete(getPairKey(session.challengerId, session.opponentId));
+    rpsChallengeCooldowns.set(getDirectionalKey(session.challengerId, session.opponentId), Date.now());
 
     const challengerChoice = session.choices[session.challengerId];
     const opponentChoice = session.choices[session.opponentId];
@@ -497,6 +596,10 @@ async function finalizeMiniGameSession(
             winnerUid = session.opponentId;
             loserUid = session.challengerId;
         }
+    }
+    if (reason === 'timeout' && session.phase === 'invite') {
+        outcome = 'declined';
+        actorId = actorId ?? session.opponentId;
     }
 
     const previousRatings: Record<string, number> = {
@@ -557,4 +660,26 @@ async function finalizeMiniGameSession(
 
     sendToUser(session.challengerId, basePayload);
     sendToUser(session.opponentId, basePayload);
+}
+
+async function handleMiniGameSideLock(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'mini-game-side-lock' }>
+) {
+    const requesterUid = ctx.ws.uid;
+    if (!requesterUid) return;
+    const { ownerEntry, opponentEntry } = message;
+    if (!ownerEntry) return;
+    if (ownerEntry.ownerUid !== requesterUid) {
+        return;
+    }
+    const payload = {
+        type: 'mini-game-side-lock',
+        ownerEntry,
+        opponentEntry,
+    };
+    sendToUser(ownerEntry.ownerUid, payload);
+    if (ownerEntry.opponentUid) {
+        sendToUser(ownerEntry.opponentUid, payload);
+    }
 }
