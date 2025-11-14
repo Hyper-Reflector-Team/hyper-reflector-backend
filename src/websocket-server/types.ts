@@ -5,11 +5,16 @@ export interface SocketUser {
     uid: string;
     email?: string;
     displayName?: string;
+    userName?: string;
+    userProfilePic?: string;
     lobbyId?: string;
     winStreak?: number;
     stability?: boolean;
     mutedUsers?: string[];
     currentMatchId?: string;
+    accountElo?: number;
+    countryCode?: string;
+    userTitle?: unknown;
     [key: string]: unknown;
 }
 
