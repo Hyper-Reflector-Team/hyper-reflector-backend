@@ -7,7 +7,7 @@ import {
     SIGNAL_PORT,
     DEFAULT_LOBBY_ID,
 } from './config';
-import { handleMessage } from './message-handler';
+import { handleMessage, forceCloseMatchForUser } from './message-handler';
 import { connectedUsers, userLobby } from './state';
 import { AugmentedWebSocket, MessageContext, SignalMessage } from './types';
 import {
@@ -142,6 +142,7 @@ wss.on('connection', (ws, req) => {
         if (!augmented.uid) return;
 
         const stored = connectedUsers.get(augmented.uid);
+        forceCloseMatchForUser(augmented.uid, wss, 'connection-closed');
         connectedUsers.delete(augmented.uid);
         userLobby.delete(augmented.uid);
 

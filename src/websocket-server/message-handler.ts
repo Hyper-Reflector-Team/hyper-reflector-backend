@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { randomUUID } from 'crypto';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
-import { connectedUsers, lobbyMeta, lobbies, userLobby } from './state';
+import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches } from './state';
 import { ConnectedUser, MessageContext, SignalMessage, SocketUser } from './types';
 import {
     broadcastKillPeer,
@@ -59,6 +59,72 @@ function sendToUser(uid: string, payload: unknown) {
     target.ws.send(JSON.stringify(payload));
 }
 
+type SerializedMatch = {
+    id: string;
+    lobbyId: string;
+    startedAt: number;
+    gameName?: string | null;
+    players: Array<{
+        uid: string;
+        userName?: string;
+        userProfilePic?: string;
+        countryCode?: string;
+        userTitle?: ConnectedUser['userTitle'];
+        accountElo?: number;
+        playerSlot: 0 | 1;
+    }>;
+};
+
+function buildMatchListPayload(): { type: 'match-list'; matches: SerializedMatch[] } {
+    const matches = [...activeMatches.values()].map((match) => ({
+        ...match,
+        players: match.players.map((player) => {
+            const source = connectedUsers.get(player.uid);
+            return {
+                uid: player.uid,
+                playerSlot: player.playerSlot,
+                userName: source?.userName ?? player.userName,
+                userProfilePic: source?.userProfilePic ?? player.userProfilePic,
+                countryCode: source?.countryCode ?? player.countryCode,
+                userTitle: source?.userTitle ?? player.userTitle,
+                accountElo:
+                    typeof source?.accountElo === 'number' ? source.accountElo : player.accountElo,
+            };
+        }),
+    }));
+
+    return {
+        type: 'match-list',
+        matches,
+    };
+}
+
+function sendMatchListSnapshot(ws: WebSocket | undefined) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(buildMatchListPayload()));
+}
+
+function broadcastMatchListSnapshot(wss: WebSocketServer) {
+    const payload = JSON.stringify(buildMatchListPayload());
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(payload);
+        }
+    });
+}
+
+function buildMatchPlayerEntry(user: ConnectedUser, playerSlot: 0 | 1) {
+    return {
+        uid: user.uid,
+        playerSlot,
+        userName: user.userName,
+        userProfilePic: user.userProfilePic,
+        countryCode: user.countryCode,
+        userTitle: user.userTitle,
+        accountElo: typeof user.accountElo === 'number' ? user.accountElo : undefined,
+    };
+}
+
 export async function handleMessage(ctx: MessageContext, message: SignalMessage) {
     switch (message.type) {
         case 'join':
@@ -78,12 +144,14 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'userDisconnect':
             broadcastKillPeer(message.userUID ?? ctx.ws.uid, ctx.wss);
+            forceCloseMatchForUser(message.userUID ?? ctx.ws.uid, ctx.wss, 'user-disconnected');
             break;
         case 'sendMessage':
             await handleSendMessage(message.sender, message.message, message.messageId);
             break;
         case 'matchEnd':
             disconnectUserFromUsers(message.userUID, ctx.wss);
+            forceCloseMatchForUser(message.userUID ?? ctx.ws.uid, ctx.wss, 'match-end-event');
             break;
         case 'webrtc-ping-offer':
         case 'webrtc-ping-answer':
@@ -114,6 +182,9 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'mini-game-side-lock':
             await handleMiniGameSideLock(ctx, message);
+            break;
+        case 'match-status':
+            await handleMatchStatus(ctx, message);
             break;
         default:
             ctx.logger.warn('Unhandled message type', message);
@@ -149,6 +220,7 @@ async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends
         })
     );
 
+    sendMatchListSnapshot(ctx.ws);
     void populateGeoForUser(ctx, connectedUser);
 }
 
@@ -351,6 +423,24 @@ async function handleRequestMatch(
 
     sendMatchStart(challenger, challengerSlot, opponentId);
     sendMatchStart(opponent, opponentSlot, challengerId);
+
+    const now = Date.now();
+    activeMatches.set(matchId, {
+        id: matchId,
+        lobbyId: resolvedLobbyId,
+        startedAt: now,
+        gameName: gameName ?? null,
+        players: [
+            buildMatchPlayerEntry(challenger, challengerSlot),
+            buildMatchPlayerEntry(opponent, opponentSlot),
+        ],
+    });
+
+    connectedUsers.set(challengerId, { ...challenger, currentMatchId: matchId });
+    connectedUsers.set(opponentId, { ...opponent, currentMatchId: matchId });
+
+    broadcastUserList(resolvedLobbyId);
+    broadcastMatchListSnapshot(ctx.wss);
 }
 
 async function handleSendMessage(sender: SocketUser | undefined, message: string, messageId?: string) {
@@ -682,4 +772,56 @@ async function handleMiniGameSideLock(
     if (ownerEntry.opponentUid) {
         sendToUser(ownerEntry.opponentUid, payload);
     }
+}
+
+async function handleMatchStatus(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'match-status' }>
+) {
+    if (message.status !== 'end') {
+        return;
+    }
+    const viewerId = ctx.ws.uid;
+    if (!viewerId) {
+        return;
+    }
+    forceCloseMatchForUser(viewerId, ctx.wss, 'match-complete');
+}
+
+export function forceCloseMatchForUser(
+    uid: string | undefined,
+    wss: WebSocketServer,
+    reason?: string
+) {
+    if (!uid) return;
+    const user = connectedUsers.get(uid);
+    const matchId = user?.currentMatchId;
+    if (!matchId) {
+        return;
+    }
+    const match = activeMatches.get(matchId);
+    activeMatches.delete(matchId);
+
+    const lobbyId = match?.lobbyId ?? userLobby.get(uid) ?? DEFAULT_LOBBY_ID;
+    const participants = match?.players ?? [{ uid, playerSlot: 0 as 0 | 1 }];
+
+    participants.forEach((player) => {
+        const entry = connectedUsers.get(player.uid);
+        if (entry) {
+            connectedUsers.set(player.uid, { ...entry, currentMatchId: undefined });
+            if (player.uid !== uid && entry.ws?.readyState === WebSocket.OPEN) {
+                entry.ws.send(
+                    JSON.stringify({
+                        type: 'match-force-close',
+                        matchId,
+                        opponentId: uid,
+                        reason: reason ?? 'match-ended',
+                    })
+                );
+            }
+        }
+    });
+
+    broadcastUserList(lobbyId);
+    broadcastMatchListSnapshot(wss);
 }

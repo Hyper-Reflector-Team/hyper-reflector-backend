@@ -33,7 +33,7 @@ export function broadcastUserList(lobbyId: string) {
     const users = [...lobby.keys()]
         .map((uid) => {
             const entry = connectedUsers.get(uid);
-            if (!entry) return null;
+            if (!entry || entry.currentMatchId) return null;
             const publicUser = toPublicUser(entry);
             return publicUser.uid ? publicUser : null;
         })

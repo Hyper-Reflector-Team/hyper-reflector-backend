@@ -9,6 +9,7 @@ export interface SocketUser {
     winStreak?: number;
     stability?: boolean;
     mutedUsers?: string[];
+    currentMatchId?: string;
     [key: string]: unknown;
 }
 
@@ -129,6 +130,13 @@ export type SignalMessage =
           type: 'mini-game-side-lock';
           ownerEntry: SidePreferenceEntry;
           opponentEntry?: SidePreferenceEntry;
+      }
+    | {
+          type: 'match-status';
+          status: 'start' | 'end';
+          matchId: string;
+          opponentId?: string;
+          lobbyId?: string;
       };
 
 export type MessageHandler = (ctx: MessageContext, message: SignalMessage) => Promise<void> | void;
