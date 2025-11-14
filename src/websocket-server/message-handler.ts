@@ -19,6 +19,7 @@ import { DEFAULT_LOBBY_ID } from './config';
 import { handleEstimatePing, populateGeoForUser } from './services/ping';
 
 const serverInfo = require('../../keys/server');
+const DEFAULT_RPS_ELO = 1200;
 type MiniGameChoice = 'rock' | 'paper' | 'scissors';
 
 type MiniGameSession = {
@@ -33,6 +34,11 @@ type MiniGameSession = {
 };
 
 const miniGameSessions = new Map<string, MiniGameSession>();
+
+function getUserRpsElo(uid: string) {
+    const entry = connectedUsers.get(uid);
+    return typeof entry?.rpsElo === 'number' ? entry.rpsElo : DEFAULT_RPS_ELO;
+}
 
 function sanitizeUsers() {
     return [...connectedUsers.values()].map(({ ws, ...user }) => user);
@@ -493,6 +499,11 @@ async function finalizeMiniGameSession(
         }
     }
 
+    const previousRatings: Record<string, number> = {
+        [session.challengerId]: getUserRpsElo(session.challengerId),
+        [session.opponentId]: getUserRpsElo(session.opponentId),
+    };
+
     const basePayload: any = {
         type: 'mini-game-result',
         sessionId: session.id,
@@ -524,8 +535,20 @@ async function finalizeMiniGameSession(
                     },
                 }
             );
-            if (result?.data?.ratings) {
-                basePayload.ratings = result.data.ratings;
+            const nextRatings = result?.data?.ratings;
+            if (nextRatings) {
+                basePayload.ratings = nextRatings;
+                const ratingChanges: Record<string, number> = {};
+                Object.entries(nextRatings).forEach(([uid, rating]) => {
+                    const numericRating = typeof rating === 'number' ? rating : DEFAULT_RPS_ELO;
+                    const delta = numericRating - (previousRatings[uid] ?? DEFAULT_RPS_ELO);
+                    ratingChanges[uid] = delta;
+                    const connected = connectedUsers.get(uid);
+                    if (connected) {
+                        connectedUsers.set(uid, { ...connected, rpsElo: numericRating });
+                    }
+                });
+                basePayload.ratingChanges = ratingChanges;
             }
         } catch (error) {
             console.error('Failed to sync RPS elo', error);
