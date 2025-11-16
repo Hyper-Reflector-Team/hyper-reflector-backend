@@ -223,18 +223,16 @@ app.post('/get-user-server', async (req, res) => {
 })
 
 // account setting
-app.post('/create-account', (req, res) => {
-    // if user cannot be verified kick them out of the request
-    getAuth()
-        .verifyIdToken(req.body.idToken)
-        .then((decodedToken) => {
-            const uid = decodedToken.uid
-            // add user to logged in users collection
-            api.createAccount(req.body, uid)
-        })
-        .catch((err) => {
-            console.log('user touched api without being logged in', err)
-        })
+app.post('/create-account', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        await api.createAccount(req.body, uid)
+        res.status(200).json({ created: true })
+    } catch (err) {
+        console.log('user touched api without being logged in', err)
+        res.status(403).json({ error: 'unauthorized' })
+    }
 })
 
 app.post('/get-user-auth', async (req, res) => {
