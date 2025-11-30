@@ -183,11 +183,9 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 	}
 
 	if msg.UID != "" {
-		delete(users, msg.UID)
 		delete(activePeers, msg.UID)
 	}
 	if msg.PeerUID != "" {
-		delete(users, msg.PeerUID)
 		delete(activePeers, msg.PeerUID)
 	}
 
