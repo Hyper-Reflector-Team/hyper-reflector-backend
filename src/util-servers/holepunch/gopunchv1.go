@@ -39,8 +39,9 @@ type ControlPayload struct {
 const HOLE_PUNCH_SERVER_PORT int = 33334
 
 var (
-	users = make(map[string]Peer)
-	mu    sync.Mutex
+	users       = make(map[string]Peer)
+	activePeers = make(map[string]Peer)
+	mu          sync.Mutex
 )
 
 func main() {
@@ -116,16 +117,20 @@ func handleMessage(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		return
 	}
 
-	users[msg.UID] = Peer{
+	currentPeer := Peer{
 		UID:     msg.UID,
 		Address: remote.IP.String(),
 		Port:    remote.Port,
 	}
+	users[msg.UID] = currentPeer
+	activePeers[msg.UID] = currentPeer
 
 	log.Printf("Stored %s at %s:%d\n", msg.UID, remote.IP, remote.Port)
 
 	if peer, exists := users[msg.PeerUID]; exists {
-		sendMatchData(conn, users[msg.UID], peer)
+		sendMatchData(conn, currentPeer, peer)
+		delete(users, msg.UID)
+		delete(users, msg.PeerUID)
 	}
 }
 
@@ -155,7 +160,7 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 	var peer Peer
 	peerExists := false
 	if msg.PeerUID != "" {
-		if storedPeer, ok := users[msg.PeerUID]; ok {
+		if storedPeer, ok := activePeers[msg.PeerUID]; ok {
 			peer = storedPeer
 			peerExists = true
 		}
@@ -163,9 +168,11 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 
 	if msg.UID != "" {
 		delete(users, msg.UID)
+		delete(activePeers, msg.UID)
 	}
 	if msg.PeerUID != "" {
 		delete(users, msg.PeerUID)
+		delete(activePeers, msg.PeerUID)
 	}
 
 	if !peerExists {
