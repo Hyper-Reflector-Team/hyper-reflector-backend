@@ -183,9 +183,15 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 	if matchID == "" {
 		matchID = currentMatchID[msg.PeerUID]
 	}
-	if msg.MatchID != "" && matchID != "" && matchID != msg.MatchID {
-		log.Printf("Ignoring kill from %s with stale matchId %s (current %s)\n", msg.UID, msg.MatchID, matchID)
-		return
+	if msg.MatchID != "" {
+		if matchID == "" {
+			log.Printf("Ignoring kill from %s with unknown matchId %s\n", msg.UID, msg.MatchID)
+			return
+		}
+		if matchID != msg.MatchID {
+			log.Printf("Ignoring kill from %s with stale matchId %s (current %s)\n", msg.UID, msg.MatchID, matchID)
+			return
+		}
 	}
 
 	var peer Peer
