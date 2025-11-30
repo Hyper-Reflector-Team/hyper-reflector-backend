@@ -17,6 +17,11 @@ type Peer struct {
 	Port    int    `json:"port"`
 }
 
+type peerRecord struct {
+	Peer     Peer
+	LastSeen time.Time
+}
+
 // Message represents incoming JSON message
 type Message struct {
 	UID     string `json:"uid"`
@@ -39,10 +44,13 @@ type ControlPayload struct {
 const HOLE_PUNCH_SERVER_PORT int = 33334
 
 var (
-	users       = make(map[string]Peer)
-	activePeers = make(map[string]Peer)
+	users       = make(map[string]peerRecord)
+	activePeers = make(map[string]peerRecord)
 	mu          sync.Mutex
 )
+
+const peerTimeout = 30 * time.Second
+const cleanupInterval = 30 * time.Second
 
 func main() {
 	addr := net.UDPAddr{
@@ -59,6 +67,14 @@ func main() {
 	log.Println("UDP server listening on", addr.String())
 
 	buf := make([]byte, 2048)
+
+	go func() {
+		ticker := time.NewTicker(cleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			pruneStalePeers()
+		}
+	}()
 
 	// for {
 	// 	n, remoteAddr, err := conn.ReadFromUDP(buf)
@@ -122,13 +138,13 @@ func handleMessage(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		Address: remote.IP.String(),
 		Port:    remote.Port,
 	}
-	users[msg.UID] = currentPeer
-	activePeers[msg.UID] = currentPeer
+	users[msg.UID] = peerRecord{Peer: currentPeer, LastSeen: time.Now()}
+	activePeers[msg.UID] = peerRecord{Peer: currentPeer, LastSeen: time.Now()}
 
 	log.Printf("Stored %s at %s:%d\n", msg.UID, remote.IP, remote.Port)
 
 	if peer, exists := users[msg.PeerUID]; exists {
-		sendMatchData(conn, currentPeer, peer)
+		sendMatchData(conn, currentPeer, peer.Peer)
 		delete(users, msg.UID)
 		delete(users, msg.PeerUID)
 	}
@@ -161,7 +177,7 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 	peerExists := false
 	if msg.PeerUID != "" {
 		if storedPeer, ok := activePeers[msg.PeerUID]; ok {
-			peer = storedPeer
+			peer = storedPeer.Peer
 			peerExists = true
 		}
 	}
@@ -202,5 +218,25 @@ func send(conn *net.UDPConn, msg []byte, peer Peer) {
 		log.Printf("Error sending to %s: %v\n", peer.UID, err)
 	} else {
 		log.Printf("Sent peer info to %s\n", peer.UID)
+	}
+}
+
+func pruneStalePeers() {
+	now := time.Now()
+	mu.Lock()
+	defer mu.Unlock()
+
+	for uid, record := range users {
+		if now.Sub(record.LastSeen) > peerTimeout {
+			delete(users, uid)
+			log.Printf("Removed stale waiting peer %s\n", uid)
+		}
+	}
+
+	for uid, record := range activePeers {
+		if now.Sub(record.LastSeen) > peerTimeout {
+			delete(activePeers, uid)
+			log.Printf("Removed stale active peer %s\n", uid)
+		}
 	}
 }
