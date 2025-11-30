@@ -30,6 +30,12 @@ type MatchPayload struct {
 	MatchID string `json:"matchId"`
 }
 
+type ControlPayload struct {
+	Kill        bool   `json:"kill"`
+	OpponentUID string `json:"opponentUid,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 const HOLE_PUNCH_SERVER_PORT int = 33334
 
 var (
@@ -100,12 +106,7 @@ func handleMessage(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 
 	// more robust kill code
 	if msg.Kill {
-		if msg.UID != "" {
-			delete(users, msg.UID)
-		}
-		if msg.PeerUID != "" {
-			delete(users, msg.PeerUID)
-		}
+		handleKillMessage(conn, msg)
 		log.Printf("Kill processed. Remaining users: %d\n", len(users))
 		return
 	}
@@ -148,6 +149,40 @@ func sendMatchData(conn *net.UDPConn, a, b Peer) {
 
 	duration := time.Since(start)
 	log.Printf("Match data sent to %s and %s in %s\n", a.UID, b.UID, duration)
+}
+
+func handleKillMessage(conn *net.UDPConn, msg Message) {
+	var peer Peer
+	peerExists := false
+	if msg.PeerUID != "" {
+		if storedPeer, ok := users[msg.PeerUID]; ok {
+			peer = storedPeer
+			peerExists = true
+		}
+	}
+
+	if msg.UID != "" {
+		delete(users, msg.UID)
+	}
+	if msg.PeerUID != "" {
+		delete(users, msg.PeerUID)
+	}
+
+	if !peerExists {
+		return
+	}
+
+	payload := ControlPayload{
+		Kill:        true,
+		OpponentUID: msg.UID,
+		Reason:      "peer-disconnected",
+	}
+	msgBytes, err := json.Marshal(payload)
+	if err != nil {
+		log.Println("Failed to marshal kill payload:", err)
+		return
+	}
+	send(conn, msgBytes, peer)
 }
 
 func send(conn *net.UDPConn, msg []byte, peer Peer) {
