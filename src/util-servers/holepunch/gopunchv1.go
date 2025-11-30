@@ -27,6 +27,7 @@ type Message struct {
 	UID     string `json:"uid"`
 	PeerUID string `json:"peerUid"`
 	Kill    bool   `json:"kill"`
+	MatchID string `json:"matchId,omitempty"`
 }
 
 // MatchPayload is sent to both peers
@@ -39,14 +40,16 @@ type ControlPayload struct {
 	Kill        bool   `json:"kill"`
 	OpponentUID string `json:"opponentUid,omitempty"`
 	Reason      string `json:"reason,omitempty"`
+	MatchID     string `json:"matchId,omitempty"`
 }
 
 const HOLE_PUNCH_SERVER_PORT int = 33334
 
 var (
-	users       = make(map[string]peerRecord)
-	activePeers = make(map[string]peerRecord)
-	mu          sync.Mutex
+	users          = make(map[string]peerRecord)
+	activePeers    = make(map[string]peerRecord)
+	currentMatchID = make(map[string]string)
+	mu             sync.Mutex
 )
 
 const peerTimeout = 30 * time.Second
@@ -144,13 +147,15 @@ func handleMessage(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 	log.Printf("Stored %s at %s:%d\n", msg.UID, remote.IP, remote.Port)
 
 	if peer, exists := users[msg.PeerUID]; exists {
-		sendMatchData(conn, currentPeer, peer.Peer)
+		matchID := sendMatchData(conn, currentPeer, peer.Peer)
+		currentMatchID[msg.UID] = matchID
+		currentMatchID[msg.PeerUID] = matchID
 		delete(users, msg.UID)
 		delete(users, msg.PeerUID)
 	}
 }
 
-func sendMatchData(conn *net.UDPConn, a, b Peer) {
+func sendMatchData(conn *net.UDPConn, a, b Peer) string {
 	start := time.Now()
 
 	matchID := uuid.New().String()
@@ -170,9 +175,19 @@ func sendMatchData(conn *net.UDPConn, a, b Peer) {
 
 	duration := time.Since(start)
 	log.Printf("Match data sent to %s and %s in %s\n", a.UID, b.UID, duration)
+	return matchID
 }
 
 func handleKillMessage(conn *net.UDPConn, msg Message) {
+	matchID := currentMatchID[msg.UID]
+	if matchID == "" {
+		matchID = currentMatchID[msg.PeerUID]
+	}
+	if msg.MatchID != "" && matchID != "" && matchID != msg.MatchID {
+		log.Printf("Ignoring kill from %s with stale matchId %s (current %s)\n", msg.UID, msg.MatchID, matchID)
+		return
+	}
+
 	var peer Peer
 	peerExists := false
 	if msg.PeerUID != "" {
@@ -197,6 +212,7 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 		Kill:        true,
 		OpponentUID: msg.UID,
 		Reason:      "peer-disconnected",
+		MatchID:     matchID,
 	}
 	msgBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -204,6 +220,13 @@ func handleKillMessage(conn *net.UDPConn, msg Message) {
 		return
 	}
 	send(conn, msgBytes, peer)
+
+	if msg.UID != "" {
+		delete(currentMatchID, msg.UID)
+	}
+	if msg.PeerUID != "" {
+		delete(currentMatchID, msg.PeerUID)
+	}
 }
 
 func send(conn *net.UDPConn, msg []byte, peer Peer) {
