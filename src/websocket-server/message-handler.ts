@@ -373,19 +373,35 @@ async function handleRequestMatch(
     const challenger = connectedUsers.get(challengerId);
     const opponent = connectedUsers.get(opponentId);
 
-        if (!challenger || !opponent) {
-            if (ctx.ws.readyState === WebSocket.OPEN) {
-                ctx.ws.send(
-                    JSON.stringify({
-                        type: 'match-start-error',
-                        challengerId,
-                        opponentId,
-                        reason: 'Opponent is no longer online.',
-                    })
-                );
-            }
-            return;
+    if (challenger?.currentMatchId) {
+        ctx.logger.warn(
+            `Challenger ${challengerId} still had active match ${challenger.currentMatchId}; forcing cleanup`
+        );
+        forceCloseMatchForUser(challengerId, ctx.wss, 'stale-current-match');
+    }
+    if (opponent?.currentMatchId) {
+        ctx.logger.warn(
+            `Opponent ${opponentId} still had active match ${opponent.currentMatchId}; forcing cleanup`
+        );
+        forceCloseMatchForUser(opponentId, ctx.wss, 'stale-current-match');
+    }
+
+    const resolvedChallenger = connectedUsers.get(challengerId);
+    const resolvedOpponent = connectedUsers.get(opponentId);
+
+    if (!resolvedChallenger || !resolvedOpponent) {
+        if (ctx.ws.readyState === WebSocket.OPEN) {
+            ctx.ws.send(
+                JSON.stringify({
+                    type: 'match-start-error',
+                    challengerId,
+                    opponentId,
+                    reason: 'Opponent is no longer online.',
+                })
+            );
         }
+        return;
+    }
 
     const matchId = randomUUID();
     const resolvedLobbyId =
@@ -421,8 +437,8 @@ async function handleRequestMatch(
     const challengerSlot = preferredSlot === 1 ? 1 : 0;
     const opponentSlot = challengerSlot === 0 ? 1 : 0;
 
-    sendMatchStart(challenger, challengerSlot, opponentId);
-    sendMatchStart(opponent, opponentSlot, challengerId);
+    sendMatchStart(resolvedChallenger, challengerSlot, opponentId);
+    sendMatchStart(resolvedOpponent, opponentSlot, challengerId);
 
     const now = Date.now();
     activeMatches.set(matchId, {
@@ -431,13 +447,13 @@ async function handleRequestMatch(
         startedAt: now,
         gameName: gameName ?? null,
         players: [
-            buildMatchPlayerEntry(challenger, challengerSlot),
-            buildMatchPlayerEntry(opponent, opponentSlot),
+            buildMatchPlayerEntry(resolvedChallenger, challengerSlot),
+            buildMatchPlayerEntry(resolvedOpponent, opponentSlot),
         ],
     });
 
-    connectedUsers.set(challengerId, { ...challenger, currentMatchId: matchId });
-    connectedUsers.set(opponentId, { ...opponent, currentMatchId: matchId });
+    connectedUsers.set(challengerId, { ...resolvedChallenger, currentMatchId: matchId });
+    connectedUsers.set(opponentId, { ...resolvedOpponent, currentMatchId: matchId });
 
     broadcastUserList(resolvedLobbyId);
     broadcastMatchListSnapshot(ctx.wss);
