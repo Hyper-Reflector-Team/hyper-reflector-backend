@@ -130,14 +130,13 @@ function buildMatchPlayerEntry(user: ConnectedUser, playerSlot: 0 | 1) {
     };
 }
 
-function notifyHolePunchKill(uid: string, peerUid?: string, matchId?: string) {
+function notifyHolePunchKill(uid: string, peerUid?: string) {
     if (!uid || !peerUid) return;
     const payload = Buffer.from(
         JSON.stringify({
             uid,
             peerUid,
             kill: true,
-            matchId,
         })
     );
 
@@ -865,7 +864,7 @@ export function forceCloseMatchForUser(
         participants.forEach((player) => {
             const opponent = participants.find((target) => target.uid !== player.uid);
             if (opponent) {
-                notifyHolePunchKill(player.uid, opponent.uid, matchId);
+        notifyHolePunchKill(player.uid, opponent.uid);
             }
         });
     }
