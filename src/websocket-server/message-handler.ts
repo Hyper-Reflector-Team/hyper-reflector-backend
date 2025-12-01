@@ -1,4 +1,5 @@
 import axios from 'axios';
+import dgram from 'dgram';
 import { randomUUID } from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
@@ -19,6 +20,10 @@ import { DEFAULT_LOBBY_ID } from './config';
 import { handleEstimatePing, populateGeoForUser } from './services/ping';
 
 const serverInfo = require('../../keys/server');
+const HOLEPUNCH_PORT = Number(serverInfo.PUNCH_PORT ?? 33334);
+const HOLEPUNCH_HOST = serverInfo.COTURN_IP ?? '127.0.0.1';
+const holePunchSocket = dgram.createSocket('udp4');
+holePunchSocket.unref();
 const DEFAULT_RPS_ELO = 1200;
 const RPS_INVITE_WINDOW_MS = 30_000;
 const RPS_CHOICE_WINDOW_MS = 10_000;
@@ -123,6 +128,24 @@ function buildMatchPlayerEntry(user: ConnectedUser, playerSlot: 0 | 1) {
         userTitle: user.userTitle,
         accountElo: typeof user.accountElo === 'number' ? user.accountElo : undefined,
     };
+}
+
+function notifyHolePunchKill(uid: string, peerUid?: string, matchId?: string) {
+    if (!uid || !peerUid) return;
+    const payload = Buffer.from(
+        JSON.stringify({
+            uid,
+            peerUid,
+            kill: true,
+            matchId,
+        })
+    );
+
+    holePunchSocket.send(payload, HOLEPUNCH_PORT, HOLEPUNCH_HOST, (err) => {
+        if (err) {
+            console.error('Failed to notify hole punching server about match close', err);
+        }
+    });
 }
 
 export async function handleMessage(ctx: MessageContext, message: SignalMessage) {
@@ -837,6 +860,15 @@ export function forceCloseMatchForUser(
             }
         }
     });
+
+    if (participants.length > 1) {
+        participants.forEach((player) => {
+            const opponent = participants.find((target) => target.uid !== player.uid);
+            if (opponent) {
+                notifyHolePunchKill(player.uid, opponent.uid, matchId);
+            }
+        });
+    }
 
     broadcastUserList(lobbyId);
     broadcastMatchListSnapshot(wss);
