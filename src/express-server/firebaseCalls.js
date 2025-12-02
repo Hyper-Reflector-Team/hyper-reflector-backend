@@ -396,7 +396,7 @@ async function uploadMatchData(matchData, uid) {
     const p1Char = dataConverter.getCharacterByCode(parsed['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsed['player2-char'])
     const matchResult = parsed['p1-win'] ? '1' : '2'
-    const parsedMatchUuid = parsed['match-uuid']
+    const parsedMatchUuid = parsed['match-uuid'] || parsed['matchUuid']
     const matchUuid =
         (typeof parsedMatchUuid === 'string' && parsedMatchUuid.length > 0
             ? parsedMatchUuid
