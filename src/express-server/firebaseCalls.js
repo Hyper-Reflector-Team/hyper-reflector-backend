@@ -392,8 +392,6 @@ async function uploadMatchData(matchData, uid) {
     if (uid === !matchData.player1) return
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
-    const sessionSnap = await sessionRef.get()
-
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)
     const p1Char = dataConverter.getCharacterByCode(parsed['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsed['player2-char'])
@@ -419,6 +417,27 @@ async function uploadMatchData(matchData, uid) {
         player2Super: parsed['player2-super'],
     }
 
+    const entryGuardRef = db.collection('global-match-entries').doc(matchUuid)
+    const didReserveEntry = await db.runTransaction(async (transaction) => {
+        const entrySnapshot = await transaction.get(entryGuardRef)
+        if (entrySnapshot.exists) {
+            return false
+        }
+        transaction.set(entryGuardRef, {
+            matchUuid,
+            matchId: matchData.matchId,
+            createdAt: Date.now(),
+        })
+        return true
+    })
+
+    if (!didReserveEntry) {
+        console.log('Duplicate match detected globally, skipping upload:', matchUuid)
+        return
+    }
+
+    const sessionSnap = await sessionRef.get()
+
     if (!sessionSnap.exists) {
         console.log('snap shot did not exist')
         // First match in session, create new document
@@ -439,14 +458,6 @@ async function uploadMatchData(matchData, uid) {
         console.log('snap shot did exist')
         // Get current matches first (avoid fetching *after* the update)
         const existingSession = sessionSnap.data()
-
-        const hasDuplicate =
-            Array.isArray(existingSession.matches) &&
-            existingSession.matches.some((match) => match.matchUuid && match.matchUuid === matchEntry.matchUuid)
-        if (hasDuplicate) {
-            console.log('Duplicate match detected, skipping upload for match UUID:', matchEntry.matchUuid)
-            return
-        }
 
         const allMatches = [...(existingSession.matches || []), matchEntry]
 
