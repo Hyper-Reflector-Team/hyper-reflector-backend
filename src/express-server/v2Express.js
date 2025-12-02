@@ -1,4 +1,5 @@
 const express = require('express')
+const rateLimit = require('express-rate-limit')
 const app = express()
 const port = 8080 // 8888 for local
 // firebase
@@ -15,6 +16,14 @@ initializeApp({
 const api = require('./firebaseCalls')
 
 app.use(express.json()) // for parsing application/json
+const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' },
+})
+app.use(apiLimiter)
 
 // SERVER
 //expects a user token from firebase auth to verify
@@ -73,8 +82,16 @@ app.post('/log-out', (req, res) => {
 
 // insecure? - need to test more
 app.post('/log-out-internal', (req, res) => {
-    // if user cannot be verified kick them out of the request
-    api.removeLoggedInUser(req.body.userEmail)
+    getAuth()
+        .verifyIdToken(req.body.idToken)
+        .then(() => {
+            api.removeLoggedInUser(req.body.userEmail)
+            res.status(200).send('Logged out')
+        })
+        .catch((err) => {
+            console.log('unauthorized log-out-internal call', err)
+            res.status(403).send('Forbidden')
+        })
 })
 
 //profile api
@@ -105,6 +122,23 @@ app.post('/update-user-data-socket', async (req, res) => {
     res.status(200).send('Updated')
 })
 
+app.post('/update-user-ping', async (req, res) => {
+    const authHeader = req.headers['authorization']
+    const token = authHeader && authHeader.split(' ')[1]
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        return res.status(403).send('Forbidden')
+    }
+
+    try {
+        await api.updateUserData(req.body.userData || {}, req.body.uid)
+        res.status(200).send('Updated')
+    } catch (err) {
+        console.error('Failed to update user ping from websocket server:', err)
+        res.status(500).send('Internal Server Error')
+    }
+})
+
 app.post('/update-user-streak', async (req, res) => {
     const authHeader = req.headers['authorization']
     const token = authHeader && authHeader.split(' ')[1]
@@ -116,6 +150,42 @@ app.post('/update-user-streak', async (req, res) => {
     await api.updateUserData(req.body.userData, req.body.uid)
 
     res.status(200).send('Updated')
+})
+
+app.post('/mini-game/rps-result', async (req, res) => {
+    const authHeader = req.headers['authorization']
+    const token = authHeader && authHeader.split(' ')[1]
+
+    if (token !== serverInfo.SERVER_SECRET) {
+        return res.status(403).send('Forbidden')
+    }
+
+    try {
+        const result = await api.recordRpsResult({
+            challengerUid: req.body.challengerUid,
+            opponentUid: req.body.opponentUid,
+            winnerUid: req.body.winnerUid,
+        })
+        res.status(200).json(result)
+    } catch (error) {
+        console.error('Failed to record RPS result', error)
+        res.status(500).json({ error: 'rps-result-failed' })
+    }
+})
+
+app.post('/mini-game/side-selection', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        if (!decodedToken?.uid) return res.status(403).json({ error: 'unauthorized' })
+        const result = await api.setSidePreference(decodedToken.uid, req.body.opponentUid, req.body.side)
+        if (!result) {
+            return res.status(400).json({ error: 'failed-to-set-preference' })
+        }
+        res.status(200).json(result)
+    } catch (error) {
+        console.error('Failed to set side preference', error)
+        res.status(500).json({ error: 'side-preference-failed' })
+    }
 })
 
 app.post('/get-user-data', async (req, res) => {
@@ -153,18 +223,16 @@ app.post('/get-user-server', async (req, res) => {
 })
 
 // account setting
-app.post('/create-account', (req, res) => {
-    // if user cannot be verified kick them out of the request
-    getAuth()
-        .verifyIdToken(req.body.idToken)
-        .then((decodedToken) => {
-            const uid = decodedToken.uid
-            // add user to logged in users collection
-            api.createAccount(req.body, uid)
-        })
-        .catch((err) => {
-            console.log('user touched api without being logged in', err)
-        })
+app.post('/create-account', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        await api.createAccount(req.body, uid)
+        res.status(200).json({ created: true })
+    } catch (err) {
+        console.log('user touched api without being logged in', err)
+        res.status(403).json({ error: 'unauthorized' })
+    }
 })
 
 app.post('/get-user-auth', async (req, res) => {
@@ -191,20 +259,18 @@ app.post('/get-custom-token', async (req, res) => {
 })
 
 // match related
-app.post('/upload-match', (req, res) => {
+app.post('/upload-match', async (req, res) => {
     console.log('someone is trying to upload a match')
-    // if user cannot be verified kick them out of the request
-    getAuth()
-        .verifyIdToken(req.body.idToken)
-        .then((decodedToken) => {
-            const uid = decodedToken.uid
-            // add user to logged in users collection
-            const data = req.body
-            api.uploadMatchData(data, uid)
-        })
-        .catch((err) => {
-            console.log('user touched api without being logged in', err)
-        })
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const data = req.body
+        await api.uploadMatchData(data, uid)
+        res.status(200).json({ ok: true })
+    } catch (err) {
+        console.log('user touched api without being logged in', err)
+        res.status(403).json({ error: 'unauthorized' })
+    }
 })
 
 app.post('/get-user-matches', async (req, res) => {
@@ -301,6 +367,30 @@ app.post('/get-player-stats', async (req, res) => {
     }
 })
 
+app.post('/search-users', async (req, res) => {
+    try {
+        await getAuth().verifyIdToken(req.body.idToken)
+        const { query, limit, cursor } = req.body
+        const result = await api.searchUsers(query, limit, cursor)
+        return res.json(result)
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/get-leaderboard', async (req, res) => {
+    try {
+        await getAuth().verifyIdToken(req.body.idToken)
+        const { sortBy, limit, cursor } = req.body
+        const result = await api.getLeaderboard(sortBy, limit, cursor)
+        return res.json(result)
+    } catch (err) {
+        console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
 app.post('/get-titles', async (req, res) => {
     try {
         const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
@@ -319,6 +409,91 @@ app.post('/get-titles', async (req, res) => {
         }
     } catch (err) {
         console.error(err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/create-title-flair', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const created = await api.createTitleFlair(req.body.flair)
+        if (!created) {
+            return res.status(400).json({ error: 'Invalid flair payload' })
+        }
+
+        return res.json({ flair: created })
+    } catch (err) {
+        console.error('create-title-flair failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/get-conditional-flairs', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const flairs = await api.getConditionalFlairs()
+        return res.json({ flairs })
+    } catch (err) {
+        console.error('get-conditional-flairs failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/grant-conditional-flair', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const { targetUid, flair } = req.body
+        if (!targetUid) {
+            return res.status(400).json({ error: 'targetUid is required' })
+        }
+
+        const assigned = await api.grantConditionalFlair(targetUid, flair)
+        if (!assigned) {
+            return res.status(404).json({ error: 'User not found or flair invalid' })
+        }
+
+        return res.json({ success: true })
+    } catch (err) {
+        console.error('grant-conditional-flair failed', err)
+        res.status(500).json({ error: 'Server error' })
+    }
+})
+
+app.post('/admin/create-conditional-flair', async (req, res) => {
+    try {
+        const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+        const uid = decodedToken.uid
+        const isAdmin = await api.isAdminUser(uid)
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
+        const created = await api.createConditionalFlair(req.body.flair)
+        if (!created) {
+            return res.status(400).json({ error: 'Invalid flair payload' })
+        }
+
+        return res.json({ flair: created })
+    } catch (err) {
+        console.error('create-conditional-flair failed', err)
         res.status(500).json({ error: 'Server error' })
     }
 })
