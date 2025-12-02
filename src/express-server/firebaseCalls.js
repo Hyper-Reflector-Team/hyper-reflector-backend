@@ -441,6 +441,8 @@ async function uploadMatchData(matchData, uid) {
     if (!sessionSnap.exists) {
         console.log('snap shot did not exist')
         // First match in session, create new document
+        const firstP1Wins = matchResult === '1' ? 1 : 0
+        const firstP2Wins = matchResult === '2' ? 1 : 0
         const session = {
             sessionId: matchData.matchId,
             player1: matchData.player1,
@@ -448,12 +450,14 @@ async function uploadMatchData(matchData, uid) {
             player1Name: await getUserName(matchData.player1),
             player2Name: await getUserName(matchData.player2),
             matches: [matchEntry],
-            player1Wins: matchResult === '1' ? 1 : 0,
-            player2Wins: matchResult === '2' ? 1 : 0,
+            player1Wins: firstP1Wins,
+            player2Wins: firstP2Wins,
             timestamp: Date.now(),
         }
 
         await sessionRef.set(session)
+        p1Wins = firstP1Wins
+        p2Wins = firstP2Wins
     } else {
         console.log('snap shot did exist')
         // Get current matches first (avoid fetching *after* the update)
