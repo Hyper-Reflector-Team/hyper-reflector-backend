@@ -216,6 +216,9 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'unsubscribeLobby':
             handleUnsubscribeLobby(ctx, message);
             break;
+        case 'updateLobbyGame':
+            handleUpdateLobbyGame(ctx, message);
+            break;
         default:
             ctx.logger.warn('Unhandled message type', message);
     }
@@ -335,7 +338,7 @@ async function handleCreateLobby(
     ctx: MessageContext,
     message: Extract<SignalMessage, { type: 'createLobby' }>
 ) {
-    const { lobbyId, pass, user, isPrivate } = message;
+    const { lobbyId, pass, user, isPrivate, gameName } = message;
 
     if (lobbies.has(lobbyId)) {
         ctx.ws.send(JSON.stringify({ type: 'error', message: 'Lobby already exists' }));
@@ -353,7 +356,7 @@ async function handleCreateLobby(
         connectedUsers.set(user.uid, fresh);
     }
 
-    lobbyMeta.set(lobbyId, { pass, isPrivate, ownerUid: user.uid });
+    lobbyMeta.set(lobbyId, { pass, isPrivate, ownerUid: user.uid, gameName: gameName || undefined });
 
     // Add as a new subscription — don't remove from existing lobbies
     subscribeUserToLobby(user.uid, lobbyId);
@@ -949,6 +952,18 @@ function handleUnsubscribeLobby(
     const uid = ctx.ws.uid;
     if (!uid || !message.lobbyId?.trim()) return;
     removeUserFromLobby(uid, message.lobbyId.trim(), ctx.wss);
+    broadcastLobbyCounts(ctx.wss);
+}
+
+function handleUpdateLobbyGame(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'updateLobbyGame' }>
+) {
+    const { lobbyId, gameName } = message;
+    if (!lobbyId?.trim()) return;
+    const meta = lobbyMeta.get(lobbyId.trim());
+    if (!meta) return;
+    lobbyMeta.set(lobbyId.trim(), { ...meta, gameName: gameName || undefined });
     broadcastLobbyCounts(ctx.wss);
 }
 

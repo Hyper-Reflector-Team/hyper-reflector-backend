@@ -123,6 +123,8 @@ export function broadcastLobbyCounts(wss: WebSocketServer) {
             users: members.size,
             pass: meta?.pass ?? '',
             isPrivate: meta?.isPrivate ?? false,
+            gameName: meta?.gameName ?? '',
+            ownerUid: meta?.ownerUid ?? '',
         };
     });
 

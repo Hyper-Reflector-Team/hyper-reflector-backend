@@ -40,6 +40,7 @@ export interface LobbyMeta {
     pass?: string;
     isPrivate?: boolean;
     ownerUid?: string;
+    gameName?: string;
 }
 
 export type UpdateSocketStatePayload = {
@@ -60,7 +61,7 @@ export type EstimatePingUsersPayload = {
 export type SignalMessage =
     | { type: 'join'; user: SocketUser; lobbyId?: string }
     | { type: 'updateSocketState'; data: UpdateSocketStatePayload }
-    | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean }
+    | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean; gameName?: string }
     | { type: 'changeLobby'; newLobbyId: string; pass?: string; user: SocketUser }
     | {
           type: 'request-match';
@@ -144,7 +145,8 @@ export type SignalMessage =
           lobbyId?: string;
       }
     | { type: 'subscribeLobby'; lobbyId: string; pass?: string; user: SocketUser }
-    | { type: 'unsubscribeLobby'; lobbyId: string };
+    | { type: 'unsubscribeLobby'; lobbyId: string }
+    | { type: 'updateLobbyGame'; lobbyId: string; gameName: string };
 
 export type RankQueueEntry = {
     uid: string
