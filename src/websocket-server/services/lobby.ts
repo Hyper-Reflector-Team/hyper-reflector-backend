@@ -1,5 +1,5 @@
 import WebSocket, { WebSocketServer } from 'ws';
-import { connectedUsers, lobbies, lobbyMeta, lobbyTimeouts, userLobby } from '../state';
+import { connectedUsers, lobbies, lobbyMeta, lobbyTimeouts, userLobby, userSubscriptions } from '../state';
 import { ConnectedUser } from '../types';
 import { DEFAULT_LOBBY_ID, LOBBY_IDLE_TIMEOUT_MS } from '../config';
 
@@ -39,16 +39,79 @@ export function broadcastUserList(lobbyId: string) {
         })
         .filter(Boolean);
 
-    for (const member of lobby.values()) {
-        if (!member.ws || member.ws.readyState !== WebSocket.OPEN) continue;
+    // Send to every user subscribed to this lobby (not just members present)
+    const subscribers = new Set<string>();
+    for (const [uid, subs] of userSubscriptions.entries()) {
+        if (subs.has(lobbyId)) subscribers.add(uid);
+    }
+    // Also send to lobby members directly (covers users not yet in userSubscriptions)
+    for (const uid of lobby.keys()) subscribers.add(uid);
+
+    for (const uid of subscribers) {
+        const member = connectedUsers.get(uid);
+        if (!member?.ws || member.ws.readyState !== WebSocket.OPEN) continue;
 
         member.ws.send(
             JSON.stringify({
                 type: 'connected-users',
+                lobbyId,
                 users,
                 count: users.length,
             })
         );
+    }
+}
+
+/** Add a user to a lobby without removing them from any other lobby. */
+export function subscribeUserToLobby(uid: string, lobbyId: string) {
+    const user = connectedUsers.get(uid);
+    if (!user) return;
+
+    const lobby = ensureLobby(lobbyId);
+    lobby.set(uid, { ...user });
+
+    let subs = userSubscriptions.get(uid);
+    if (!subs) {
+        subs = new Set();
+        userSubscriptions.set(uid, subs);
+    }
+    subs.add(lobbyId);
+    userLobby.set(uid, lobbyId);
+}
+
+/** Remove a user from one specific lobby only. */
+export function removeUserFromLobby(uid: string, lobbyId: string, wss?: WebSocketServer) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby || !lobby.has(uid)) return;
+
+    lobby.delete(uid);
+
+    const subs = userSubscriptions.get(uid);
+    if (subs) subs.delete(lobbyId);
+
+    // If this was their primary lobby, update primary to another subscription
+    if (userLobby.get(uid) === lobbyId) {
+        const remaining = subs ? [...subs] : [];
+        if (remaining.length > 0) {
+            userLobby.set(uid, remaining[0]);
+        } else {
+            userLobby.delete(uid);
+        }
+    }
+
+    if (lobby.size === 0 && lobbyId !== DEFAULT_LOBBY_ID && wss) {
+        if (!lobbyTimeouts.has(lobbyId)) {
+            const timeout = setTimeout(() => {
+                lobbies.delete(lobbyId);
+                lobbyTimeouts.delete(lobbyId);
+                lobbyMeta.delete(lobbyId);
+                broadcastLobbyRemoved(lobbyId, wss);
+                broadcastLobbyCounts(wss);
+            }, LOBBY_IDLE_TIMEOUT_MS);
+            lobbyTimeouts.set(lobbyId, timeout);
+        }
+    } else {
+        broadcastUserList(lobbyId);
     }
 }
 
@@ -90,6 +153,8 @@ export function broadcastLobbyRemoved(lobbyId: string, wss: WebSocketServer) {
 
 export function removeUserFromAllLobbies(uid: string, wss: WebSocketServer) {
     if (!uid) return;
+
+    userSubscriptions.delete(uid);
 
     for (const [lobbyId, members] of lobbies.entries()) {
         if (!members.has(uid)) continue;

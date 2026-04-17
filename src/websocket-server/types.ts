@@ -142,7 +142,18 @@ export type SignalMessage =
           matchId: string;
           opponentId?: string;
           lobbyId?: string;
-      };
+      }
+    | { type: 'subscribeLobby'; lobbyId: string; pass?: string; user: SocketUser }
+    | { type: 'unsubscribeLobby'; lobbyId: string };
+
+export type RankQueueEntry = {
+    uid: string
+    elo: number
+    countryCode: string
+    lastKnownPings: Array<{ id: string; ping: number | string }>
+    lobbyId: string
+    queuedAt: number
+}
 
 export type MessageHandler = (ctx: MessageContext, message: SignalMessage) => Promise<void> | void;
 

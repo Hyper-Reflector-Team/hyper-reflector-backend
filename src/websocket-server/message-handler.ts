@@ -3,7 +3,7 @@ import dgram from 'dgram';
 import { randomUUID } from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches } from './state';
+import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches, userSubscriptions, rankQueue } from './state';
 import { ConnectedUser, MessageContext, SignalMessage, SocketUser } from './types';
 import {
     broadcastKillPeer,
@@ -14,6 +14,8 @@ import {
     disconnectUserFromUsers,
     ensureLobby,
     removeUserFromAllLobbies,
+    removeUserFromLobby,
+    subscribeUserToLobby,
     syncUserToLobby,
 } from './services/lobby';
 import { DEFAULT_LOBBY_ID } from './config';
@@ -208,6 +210,12 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'match-status':
             await handleMatchStatus(ctx, message);
             break;
+        case 'subscribeLobby':
+            await handleSubscribeLobby(ctx, message);
+            break;
+        case 'unsubscribeLobby':
+            handleUnsubscribeLobby(ctx, message);
+            break;
         default:
             ctx.logger.warn('Unhandled message type', message);
     }
@@ -254,6 +262,24 @@ async function handleUpdateSocketState(
     if (!userToUpdate) {
         ctx.logger.warn(`No user found for UID ${data.uid}`);
         return;
+    }
+
+    // Handle rank queue toggle
+    if (data.stateToUpdate.key === 'isRankQueued') {
+        const isQueue = data.stateToUpdate.value === true;
+        if (isQueue) {
+            rankQueue.set(data.uid, {
+                uid: data.uid,
+                elo: typeof userToUpdate.accountElo === 'number' ? userToUpdate.accountElo : 1200,
+                countryCode: userToUpdate.countryCode ?? '',
+                lastKnownPings: Array.isArray(userToUpdate.lastKnownPings) ? userToUpdate.lastKnownPings : [],
+                lobbyId: data.lobbyId ?? userLobby.get(data.uid) ?? DEFAULT_LOBBY_ID,
+                queuedAt: Date.now(),
+            });
+            tryRankMatch(ctx.wss);
+        } else {
+            rankQueue.delete(data.uid);
+        }
     }
 
     let updatedUserProps: Record<string, unknown>;
@@ -380,6 +406,9 @@ async function handleChangeLobby(
 
     broadcastUserList(newLobbyId);
     broadcastLobbyCounts(ctx.wss);
+
+    // Confirm the lobby change so the client can update its active lobby state
+    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId: newLobbyId, isSubscription: false }));
 }
 
 async function handleRequestMatch(
@@ -868,6 +897,147 @@ export function forceCloseMatchForUser(
             }
         });
     }
+
+    broadcastUserList(lobbyId);
+    broadcastMatchListSnapshot(wss);
+}
+
+// ── subscribeLobby / unsubscribeLobby ─────────────────────────────────────────
+
+const MAX_LOBBY_SUBSCRIPTIONS = 5;
+
+async function handleSubscribeLobby(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'subscribeLobby' }>
+) {
+    const { lobbyId, pass, user } = message;
+    if (!lobbyId?.trim() || !user?.uid) return;
+
+    const subs = userSubscriptions.get(user.uid) ?? new Set<string>();
+    if (subs.size >= MAX_LOBBY_SUBSCRIPTIONS) {
+        ctx.ws.send(JSON.stringify({ type: 'error', message: `Max ${MAX_LOBBY_SUBSCRIPTIONS} lobbies allowed` }));
+        return;
+    }
+
+    const meta = lobbyMeta.get(lobbyId);
+    if (meta?.pass && meta.pass !== (pass ?? '')) {
+        ctx.ws.send(JSON.stringify({ type: 'error', message: 'Invalid password for lobby' }));
+        return;
+    }
+
+    cancelLobbyTimeout(lobbyId);
+    subscribeUserToLobby(user.uid, lobbyId);
+    broadcastUserList(lobbyId);
+    broadcastLobbyCounts(ctx.wss);
+
+    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId, isSubscription: true }));
+}
+
+function handleUnsubscribeLobby(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'unsubscribeLobby' }>
+) {
+    const uid = ctx.ws.uid;
+    if (!uid || !message.lobbyId?.trim()) return;
+    removeUserFromLobby(uid, message.lobbyId.trim(), ctx.wss);
+    broadcastLobbyCounts(ctx.wss);
+}
+
+// ── Ranked queue matching ─────────────────────────────────────────────────────
+
+function tryRankMatch(wss: WebSocketServer) {
+    const entries = [...rankQueue.values()].filter(e => connectedUsers.has(e.uid));
+    if (entries.length < 2) return;
+
+    let bestA: string | null = null;
+    let bestB: string | null = null;
+    let bestScore = Infinity;
+
+    for (let i = 0; i < entries.length; i++) {
+        for (let j = i + 1; j < entries.length; j++) {
+            const a = entries[i];
+            const b = entries[j];
+
+            const eloDiff = Math.abs(a.elo - b.elo);
+            const sameCountry = a.countryCode && b.countryCode && a.countryCode === b.countryCode;
+
+            // Estimate ping from stored lastKnownPings
+            const pingEntry =
+                a.lastKnownPings.find(p => p.id === b.uid) ??
+                b.lastKnownPings.find(p => p.id === a.uid);
+            const rawPing = pingEntry?.ping ?? 999;
+            const pingMs = typeof rawPing === 'string' ? parseFloat(rawPing) : rawPing;
+
+            // Lower score = better match
+            const score = eloDiff + (sameCountry ? 0 : 300) + (Number.isFinite(pingMs) ? pingMs : 999);
+
+            if (score < bestScore) {
+                bestScore = score;
+                bestA = a.uid;
+                bestB = b.uid;
+            }
+        }
+    }
+
+    // Only match if score is acceptable (elo within ~400, ping under 200, or same country)
+    if (!bestA || !bestB || bestScore > 1800) return;
+
+    rankQueue.delete(bestA);
+    rankQueue.delete(bestB);
+
+    // Update isRankQueued on both users
+    const userA = connectedUsers.get(bestA);
+    const userB = connectedUsers.get(bestB);
+    if (userA) connectedUsers.set(bestA, { ...userA, isRankQueued: false } as ConnectedUser);
+    if (userB) connectedUsers.set(bestB, { ...userB, isRankQueued: false } as ConnectedUser);
+
+    // Notify clients they left the queue
+    sendToUser(bestA, { type: 'rank-queue-matched', opponentId: bestB });
+    sendToUser(bestB, { type: 'rank-queue-matched', opponentId: bestA });
+
+    startRankedMatch(bestA, bestB, wss);
+}
+
+function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer) {
+    const userA = connectedUsers.get(uidA);
+    const userB = connectedUsers.get(uidB);
+    if (!userA || !userB) return;
+
+    const matchId = randomUUID();
+    const lobbyId = userLobby.get(uidA) ?? userLobby.get(uidB) ?? DEFAULT_LOBBY_ID;
+    const serverPort = Number(serverInfo.PUNCH_PORT ?? 0) || 33334;
+
+    const basePayload = {
+        type: 'match-start',
+        matchId,
+        lobbyId,
+        gameName: null,
+        serverHost: serverInfo.COTURN_IP,
+        serverPort,
+        requestedBy: 'ranked-queue',
+        isRanked: true,
+    };
+
+    if (userA.ws?.readyState === WebSocket.OPEN) {
+        userA.ws.send(JSON.stringify({ ...basePayload, playerSlot: 0, opponentUid: uidB }));
+    }
+    if (userB.ws?.readyState === WebSocket.OPEN) {
+        userB.ws.send(JSON.stringify({ ...basePayload, playerSlot: 1, opponentUid: uidA }));
+    }
+
+    activeMatches.set(matchId, {
+        id: matchId,
+        lobbyId,
+        startedAt: Date.now(),
+        gameName: null,
+        players: [
+            buildMatchPlayerEntry(userA, 0),
+            buildMatchPlayerEntry(userB, 1),
+        ],
+    });
+
+    connectedUsers.set(uidA, { ...userA, currentMatchId: matchId });
+    connectedUsers.set(uidB, { ...userB, currentMatchId: matchId });
 
     broadcastUserList(lobbyId);
     broadcastMatchListSnapshot(wss);
