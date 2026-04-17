@@ -50,6 +50,7 @@ export type UpdateSocketStatePayload = {
         key: string;
         value: any;
     };
+    rankQueueGameName?: string;
 };
 
 export type EstimatePingUsersPayload = {
@@ -157,6 +158,7 @@ export type RankQueueEntry = {
     lastKnownPings: Array<{ id: string; ping: number | string }>
     lobbyId: string
     queuedAt: number
+    gameName: string
 }
 
 export type MessageHandler = (ctx: MessageContext, message: SignalMessage) => Promise<void> | void;

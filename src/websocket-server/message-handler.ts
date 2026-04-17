@@ -293,6 +293,7 @@ async function handleUpdateSocketState(
                 lastKnownPings: Array.isArray(userToUpdate.lastKnownPings) ? userToUpdate.lastKnownPings : [],
                 lobbyId: data.lobbyId ?? userLobby.get(data.uid) ?? DEFAULT_LOBBY_ID,
                 queuedAt: Date.now(),
+                gameName: data.rankQueueGameName ?? 'sfiii3nr1',
             });
             tryRankMatch(ctx.wss);
         } else {
@@ -996,6 +997,8 @@ function tryRankMatch(_wss: WebSocketServer) {
         for (let j = i + 1; j < entries.length; j++) {
             const a = entries[i];
             const b = entries[j];
+
+            if (a.gameName !== b.gameName) continue;
 
             const eloDiff = Math.abs(a.elo - b.elo);
             const sameCountry = a.countryCode && b.countryCode && a.countryCode === b.countryCode;
