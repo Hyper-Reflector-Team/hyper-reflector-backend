@@ -146,7 +146,9 @@ export type SignalMessage =
       }
     | { type: 'subscribeLobby'; lobbyId: string; pass?: string; user: SocketUser }
     | { type: 'unsubscribeLobby'; lobbyId: string }
-    | { type: 'updateLobbyGame'; lobbyId: string; gameName: string };
+    | { type: 'updateLobbyGame'; lobbyId: string; gameName: string }
+    | { type: 'rank-queue-accept'; matchId: string; uid: string }
+    | { type: 'rank-queue-decline'; matchId: string; uid: string };
 
 export type RankQueueEntry = {
     uid: string

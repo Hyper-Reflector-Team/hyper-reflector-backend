@@ -48,6 +48,15 @@ const miniGameSessions = new Map<string, MiniGameSession>();
 const miniGamePairIndex = new Map<string, string>();
 const rpsChallengeCooldowns = new Map<string, number>();
 
+type PendingRankMatch = {
+    matchId: string;
+    uidA: string;
+    uidB: string;
+    accepted: Set<string>;
+    timeout: NodeJS.Timeout;
+};
+const pendingRankMatches = new Map<string, PendingRankMatch>();
+
 const getPairKey = (a: string, b: string) => [a, b].sort().join('::');
 const getDirectionalKey = (challengerId: string, opponentId: string) => `${challengerId}->${opponentId}`;
 
@@ -218,6 +227,12 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'updateLobbyGame':
             handleUpdateLobbyGame(ctx, message);
+            break;
+        case 'rank-queue-accept':
+            handleRankQueueAccept(ctx, message);
+            break;
+        case 'rank-queue-decline':
+            handleRankQueueDecline(ctx, message);
             break;
         default:
             ctx.logger.warn('Unhandled message type', message);
@@ -969,7 +984,7 @@ function handleUpdateLobbyGame(
 
 // ── Ranked queue matching ─────────────────────────────────────────────────────
 
-function tryRankMatch(wss: WebSocketServer) {
+function tryRankMatch(_wss: WebSocketServer) {
     const entries = [...rankQueue.values()].filter(e => connectedUsers.has(e.uid));
     if (entries.length < 2) return;
 
@@ -985,14 +1000,12 @@ function tryRankMatch(wss: WebSocketServer) {
             const eloDiff = Math.abs(a.elo - b.elo);
             const sameCountry = a.countryCode && b.countryCode && a.countryCode === b.countryCode;
 
-            // Estimate ping from stored lastKnownPings
             const pingEntry =
                 a.lastKnownPings.find(p => p.id === b.uid) ??
                 b.lastKnownPings.find(p => p.id === a.uid);
             const rawPing = pingEntry?.ping ?? 999;
             const pingMs = typeof rawPing === 'string' ? parseFloat(rawPing) : rawPing;
 
-            // Lower score = better match
             const score = eloDiff + (sameCountry ? 0 : 300) + (Number.isFinite(pingMs) ? pingMs : 999);
 
             if (score < bestScore) {
@@ -1003,37 +1016,101 @@ function tryRankMatch(wss: WebSocketServer) {
         }
     }
 
-    // Only match if score is acceptable (elo within ~400, ping under 200, or same country)
     if (!bestA || !bestB || bestScore > 1800) return;
 
     rankQueue.delete(bestA);
     rankQueue.delete(bestB);
 
-    // Update isRankQueued on both users
     const userA = connectedUsers.get(bestA);
     const userB = connectedUsers.get(bestB);
-    if (userA) connectedUsers.set(bestA, { ...userA, isRankQueued: false } as ConnectedUser);
-    if (userB) connectedUsers.set(bestB, { ...userB, isRankQueued: false } as ConnectedUser);
+    if (!userA || !userB) return;
 
-    // Notify clients they left the queue
-    sendToUser(bestA, { type: 'rank-queue-matched', opponentId: bestB });
-    sendToUser(bestB, { type: 'rank-queue-matched', opponentId: bestA });
+    // Clear isRankQueued so the searching indicator disappears
+    connectedUsers.set(bestA, { ...userA, isRankQueued: false } as ConnectedUser);
+    connectedUsers.set(bestB, { ...userB, isRankQueued: false } as ConnectedUser);
 
-    startRankedMatch(bestA, bestB, wss);
+    // Compute ping between the two players
+    const pingEntry =
+        userA.lastKnownPings?.find(p => p.id === bestB) ??
+        userB.lastKnownPings?.find(p => p.id === bestA);
+    const rawPing = pingEntry?.ping ?? null;
+    const pingMs = rawPing !== null
+        ? (typeof rawPing === 'string' ? parseFloat(rawPing) : rawPing)
+        : null;
+
+    const matchId = randomUUID();
+    const lobbyId = userLobby.get(bestA) ?? userLobby.get(bestB!) ?? DEFAULT_LOBBY_ID;
+
+    const playerInfoA = {
+        uid: bestA,
+        userName: userA.userName ?? 'Unknown',
+        countryCode: userA.countryCode ?? '',
+        accountElo: typeof userA.accountElo === 'number' ? userA.accountElo : 1200,
+        ping: Number.isFinite(pingMs as number) ? pingMs : null,
+    };
+    const playerInfoB = {
+        uid: bestB,
+        userName: userB.userName ?? 'Unknown',
+        countryCode: userB.countryCode ?? '',
+        accountElo: typeof userB.accountElo === 'number' ? userB.accountElo : 1200,
+        ping: Number.isFinite(pingMs as number) ? pingMs : null,
+    };
+
+    // 30-second confirmation window — auto-cancel if neither accepts in time
+    const timeout = setTimeout(() => {
+        if (!pendingRankMatches.has(matchId)) return;
+        pendingRankMatches.delete(matchId);
+        sendToUser(bestA!, { type: 'rank-queue-timeout', matchId });
+        sendToUser(bestB!, { type: 'rank-queue-timeout', matchId });
+    }, 30_000);
+
+    pendingRankMatches.set(matchId, { matchId, uidA: bestA, uidB: bestB, accepted: new Set(), timeout });
+
+    sendToUser(bestA, { type: 'rank-queue-pending', matchId, playerA: playerInfoA, playerB: playerInfoB });
+    sendToUser(bestB, { type: 'rank-queue-pending', matchId, playerA: playerInfoA, playerB: playerInfoB });
+
+    broadcastUserList(lobbyId);
 }
 
-function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer) {
+function handleRankQueueAccept(ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-accept' }>) {
+    const { matchId, uid } = message;
+    const pending = pendingRankMatches.get(matchId);
+    if (!pending) return;
+
+    pending.accepted.add(uid);
+
+    if (pending.accepted.has(pending.uidA) && pending.accepted.has(pending.uidB)) {
+        clearTimeout(pending.timeout);
+        pendingRankMatches.delete(matchId);
+        startRankedMatch(pending.uidA, pending.uidB, ctx.wss, matchId);
+    }
+}
+
+function handleRankQueueDecline(_ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-decline' }>) {
+    const { matchId, uid } = message;
+    const pending = pendingRankMatches.get(matchId);
+    if (!pending) return;
+
+    clearTimeout(pending.timeout);
+    pendingRankMatches.delete(matchId);
+
+    const otherUid = uid === pending.uidA ? pending.uidB : pending.uidA;
+    sendToUser(uid, { type: 'rank-queue-cancelled', matchId, reason: 'declined' });
+    sendToUser(otherUid, { type: 'rank-queue-cancelled', matchId, reason: 'opponent-declined' });
+}
+
+function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, matchId?: string) {
     const userA = connectedUsers.get(uidA);
     const userB = connectedUsers.get(uidB);
     if (!userA || !userB) return;
 
-    const matchId = randomUUID();
+    const resolvedMatchId = matchId ?? randomUUID();
     const lobbyId = userLobby.get(uidA) ?? userLobby.get(uidB) ?? DEFAULT_LOBBY_ID;
     const serverPort = Number(serverInfo.PUNCH_PORT ?? 0) || 33334;
 
     const basePayload = {
         type: 'match-start',
-        matchId,
+        matchId: resolvedMatchId,
         lobbyId,
         gameName: null,
         serverHost: serverInfo.COTURN_IP,
@@ -1049,8 +1126,8 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer) {
         userB.ws.send(JSON.stringify({ ...basePayload, playerSlot: 1, opponentUid: uidA }));
     }
 
-    activeMatches.set(matchId, {
-        id: matchId,
+    activeMatches.set(resolvedMatchId, {
+        id: resolvedMatchId,
         lobbyId,
         startedAt: Date.now(),
         gameName: null,
@@ -1060,8 +1137,8 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer) {
         ],
     });
 
-    connectedUsers.set(uidA, { ...userA, currentMatchId: matchId });
-    connectedUsers.set(uidB, { ...userB, currentMatchId: matchId });
+    connectedUsers.set(uidA, { ...userA, currentMatchId: resolvedMatchId });
+    connectedUsers.set(uidB, { ...userB, currentMatchId: resolvedMatchId });
 
     broadcastUserList(lobbyId);
     broadcastMatchListSnapshot(wss);
