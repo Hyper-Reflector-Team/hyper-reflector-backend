@@ -342,24 +342,25 @@ async function handleCreateLobby(
         return;
     }
 
-    removeUserFromAllLobbies(user.uid, ctx.wss);
     cancelLobbyTimeout(lobbyId);
 
-    const lobby = ensureLobby(lobbyId);
-    const connectedUser = connectedUsers.get(user.uid) ?? {
-        ...user,
-        ws: ctx.ws,
-        joinedAt: Date.now(),
-        lastHeartbeat: Date.now(),
-    };
+    // Ensure the user record is up-to-date before subscribing
+    const existing = connectedUsers.get(user.uid);
+    if (existing) {
+        connectedUsers.set(user.uid, { ...existing, ws: ctx.ws });
+    } else {
+        const fresh = { ...user, ws: ctx.ws, joinedAt: Date.now(), lastHeartbeat: Date.now() } as ConnectedUser;
+        connectedUsers.set(user.uid, fresh);
+    }
 
-    connectedUsers.set(user.uid, { ...connectedUser, ws: ctx.ws });
-    lobby.set(user.uid, { ...connectedUser, ws: ctx.ws });
     lobbyMeta.set(lobbyId, { pass, isPrivate, ownerUid: user.uid });
-    userLobby.set(user.uid, lobbyId);
+
+    // Add as a new subscription — don't remove from existing lobbies
+    subscribeUserToLobby(user.uid, lobbyId);
 
     broadcastUserList(lobbyId);
-    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId }));
+    // isSubscription: true so the client adds a tab rather than replacing all
+    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId, isSubscription: true }));
     broadcastLobbyCounts(ctx.wss);
 }
 
@@ -518,14 +519,22 @@ async function handleSendMessage(sender: SocketUser | undefined, message: string
     const connectedSender = connectedUsers.get(sender.uid);
     if (!connectedSender) return;
 
-    const lobbyId =
-        userLobby.get(connectedSender.uid) ??
-        connectedSender.lobbyId ??
-        DEFAULT_LOBBY_ID;
     const trimmedMessage = message.trim();
     if (!trimmedMessage.length) return;
 
-    broadcastUserMessage(lobbyId, trimmedMessage, connectedSender, messageId);
+    // Prefer the lobby the client says they are actively viewing.
+    // Validate that the sender is actually subscribed to it before trusting it.
+    const requestedLobbyId = typeof sender.lobbyId === 'string' ? sender.lobbyId.trim() : '';
+    const senderSubs = userSubscriptions.get(connectedSender.uid);
+    const lobbyId =
+        requestedLobbyId &&
+        (senderSubs?.has(requestedLobbyId) || userLobby.get(connectedSender.uid) === requestedLobbyId)
+            ? requestedLobbyId
+            : userLobby.get(connectedSender.uid) ?? connectedSender.lobbyId ?? DEFAULT_LOBBY_ID;
+
+    // Stamp the resolved lobbyId onto the sender so the broadcast carries it
+    const senderWithLobby: ConnectedUser = { ...connectedSender, lobbyId };
+    broadcastUserMessage(lobbyId, trimmedMessage, senderWithLobby, messageId);
 }
 
 function forwardWebRtc(message: Extract<
