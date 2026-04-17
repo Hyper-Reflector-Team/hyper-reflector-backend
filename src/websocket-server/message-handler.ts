@@ -52,10 +52,20 @@ type PendingRankMatch = {
     matchId: string;
     uidA: string;
     uidB: string;
+    gameName: string;
     accepted: Set<string>;
     timeout: NodeJS.Timeout;
 };
 const pendingRankMatches = new Map<string, PendingRankMatch>();
+
+function broadcastUserListForUser(uid: string) {
+    const subs = userSubscriptions.get(uid);
+    if (subs && subs.size > 0) {
+        for (const lobbyId of subs) broadcastUserList(lobbyId);
+    } else {
+        broadcastUserList(userLobby.get(uid) ?? DEFAULT_LOBBY_ID);
+    }
+}
 
 const getPairKey = (a: string, b: string) => [a, b].sort().join('::');
 const getDirectionalKey = (challengerId: string, opponentId: string) => `${challengerId}->${opponentId}`;
@@ -175,10 +185,13 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'request-match':
             await handleRequestMatch(ctx, message);
             break;
-        case 'userDisconnect':
-            broadcastKillPeer(message.userUID ?? ctx.ws.uid, ctx.wss);
-            forceCloseMatchForUser(message.userUID ?? ctx.ws.uid, ctx.wss, 'user-disconnected');
+        case 'userDisconnect': {
+            const disconnectedUid = message.userUID ?? ctx.ws.uid;
+            rankQueue.delete(disconnectedUid ?? '');
+            broadcastKillPeer(disconnectedUid, ctx.wss);
+            forceCloseMatchForUser(disconnectedUid, ctx.wss, 'user-disconnected');
             break;
+        }
         case 'sendMessage':
             await handleSendMessage(message.sender, message.message, message.messageId);
             break;
@@ -329,7 +342,7 @@ async function handleUpdateSocketState(
 
     connectedUsers.set(data.uid, updatedUser);
     syncUserToLobby(data.uid, data.lobbyId);
-    broadcastUserList(data.lobbyId);
+    broadcastUserListForUser(data.uid);
 
     try {
         await axios.post(
@@ -526,7 +539,8 @@ async function handleRequestMatch(
     connectedUsers.set(challengerId, { ...resolvedChallenger, currentMatchId: matchId });
     connectedUsers.set(opponentId, { ...resolvedOpponent, currentMatchId: matchId });
 
-    broadcastUserList(resolvedLobbyId);
+    broadcastUserListForUser(challengerId);
+    broadcastUserListForUser(opponentId);
     broadcastMatchListSnapshot(ctx.wss);
 }
 
@@ -897,7 +911,6 @@ export function forceCloseMatchForUser(
     const match = activeMatches.get(matchId);
     activeMatches.delete(matchId);
 
-    const lobbyId = match?.lobbyId ?? userLobby.get(uid) ?? DEFAULT_LOBBY_ID;
     const participants = match?.players ?? [{ uid, playerSlot: 0 as 0 | 1 }];
 
     participants.forEach((player) => {
@@ -921,12 +934,12 @@ export function forceCloseMatchForUser(
         participants.forEach((player) => {
             const opponent = participants.find((target) => target.uid !== player.uid);
             if (opponent) {
-        notifyHolePunchKill(player.uid, opponent.uid);
+                notifyHolePunchKill(player.uid, opponent.uid);
             }
         });
     }
 
-    broadcastUserList(lobbyId);
+    participants.forEach((player) => broadcastUserListForUser(player.uid));
     broadcastMatchListSnapshot(wss);
 }
 
@@ -1021,6 +1034,8 @@ function tryRankMatch(_wss: WebSocketServer) {
 
     if (!bestA || !bestB || bestScore > 1800) return;
 
+    const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfiii3nr1';
+
     rankQueue.delete(bestA);
     rankQueue.delete(bestB);
 
@@ -1042,7 +1057,6 @@ function tryRankMatch(_wss: WebSocketServer) {
         : null;
 
     const matchId = randomUUID();
-    const lobbyId = userLobby.get(bestA) ?? userLobby.get(bestB!) ?? DEFAULT_LOBBY_ID;
 
     const playerInfoA = {
         uid: bestA,
@@ -1067,12 +1081,13 @@ function tryRankMatch(_wss: WebSocketServer) {
         sendToUser(bestB!, { type: 'rank-queue-timeout', matchId });
     }, 30_000);
 
-    pendingRankMatches.set(matchId, { matchId, uidA: bestA, uidB: bestB, accepted: new Set(), timeout });
+    pendingRankMatches.set(matchId, { matchId, uidA: bestA, uidB: bestB, gameName: matchedGameName, accepted: new Set(), timeout });
 
     sendToUser(bestA, { type: 'rank-queue-pending', matchId, playerA: playerInfoA, playerB: playerInfoB });
     sendToUser(bestB, { type: 'rank-queue-pending', matchId, playerA: playerInfoA, playerB: playerInfoB });
 
-    broadcastUserList(lobbyId);
+    broadcastUserListForUser(bestA);
+    broadcastUserListForUser(bestB);
 }
 
 function handleRankQueueAccept(ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-accept' }>) {
@@ -1085,7 +1100,7 @@ function handleRankQueueAccept(ctx: MessageContext, message: Extract<SignalMessa
     if (pending.accepted.has(pending.uidA) && pending.accepted.has(pending.uidB)) {
         clearTimeout(pending.timeout);
         pendingRankMatches.delete(matchId);
-        startRankedMatch(pending.uidA, pending.uidB, ctx.wss, matchId);
+        startRankedMatch(pending.uidA, pending.uidB, ctx.wss, pending.gameName, matchId);
     }
 }
 
@@ -1102,12 +1117,13 @@ function handleRankQueueDecline(_ctx: MessageContext, message: Extract<SignalMes
     sendToUser(otherUid, { type: 'rank-queue-cancelled', matchId, reason: 'opponent-declined' });
 }
 
-function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, matchId?: string) {
+function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, gameName?: string, matchId?: string) {
     const userA = connectedUsers.get(uidA);
     const userB = connectedUsers.get(uidB);
     if (!userA || !userB) return;
 
     const resolvedMatchId = matchId ?? randomUUID();
+    const resolvedGameName = gameName ?? null;
     const lobbyId = userLobby.get(uidA) ?? userLobby.get(uidB) ?? DEFAULT_LOBBY_ID;
     const serverPort = Number(serverInfo.PUNCH_PORT ?? 0) || 33334;
 
@@ -1115,7 +1131,7 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, matc
         type: 'match-start',
         matchId: resolvedMatchId,
         lobbyId,
-        gameName: null,
+        gameName: resolvedGameName,
         serverHost: serverInfo.COTURN_IP,
         serverPort,
         requestedBy: 'ranked-queue',
@@ -1133,7 +1149,7 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, matc
         id: resolvedMatchId,
         lobbyId,
         startedAt: Date.now(),
-        gameName: null,
+        gameName: resolvedGameName,
         players: [
             buildMatchPlayerEntry(userA, 0),
             buildMatchPlayerEntry(userB, 1),
@@ -1143,6 +1159,7 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, matc
     connectedUsers.set(uidA, { ...userA, currentMatchId: resolvedMatchId });
     connectedUsers.set(uidB, { ...userB, currentMatchId: resolvedMatchId });
 
-    broadcastUserList(lobbyId);
+    broadcastUserListForUser(uidA);
+    broadcastUserListForUser(uidB);
     broadcastMatchListSnapshot(wss);
 }
