@@ -385,7 +385,7 @@ async function handleCreateLobby(
         connectedUsers.set(user.uid, fresh);
     }
 
-    lobbyMeta.set(lobbyId, { pass, isPrivate, ownerUid: user.uid, gameName: gameName || undefined });
+    lobbyMeta.set(lobbyId, { pass, isPrivate: !!pass, ownerUid: user.uid, gameName: gameName || undefined });
 
     // Add as a new subscription — don't remove from existing lobbies
     subscribeUserToLobby(user.uid, lobbyId);
@@ -404,7 +404,7 @@ async function handleChangeLobby(
     if (!user) return;
 
     const meta = lobbyMeta.get(newLobbyId);
-    if (meta && meta.pass !== pass) {
+    if (meta?.pass && meta.pass !== (pass ?? '')) {
         ctx.ws.send(JSON.stringify({ type: 'error', message: 'Invalid password for lobby' }));
         return;
     }
