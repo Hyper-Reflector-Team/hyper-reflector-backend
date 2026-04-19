@@ -176,6 +176,9 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'join':
             await handleJoin(ctx, message.user, message.lobbyId, message.pass);
             break;
+        case 'updateProfile':
+            handleUpdateProfile(message.user);
+            break;
         case 'updateSocketState':
             await handleUpdateSocketState(ctx, message.data);
             break;
@@ -293,6 +296,28 @@ async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends
     void populateGeoForUser(ctx, connectedUser);
 }
 
+function handleUpdateProfile(user: SocketUser) {
+    if (!user?.uid) return;
+    const existing = connectedUsers.get(user.uid);
+    if (!existing) return;
+
+    const updatedUser: ConnectedUser = {
+        ...existing,
+        ...user,
+        ws: existing.ws,
+        joinedAt: existing.joinedAt,
+        lastHeartbeat: existing.lastHeartbeat,
+    };
+
+    connectedUsers.set(user.uid, updatedUser);
+
+    for (const [lobbyId, lobby] of lobbies.entries()) {
+        if (lobby.has(user.uid)) lobby.set(user.uid, { ...updatedUser });
+    }
+
+    broadcastUserListForUser(user.uid);
+}
+
 async function handleUpdateSocketState(
     ctx: MessageContext,
     data: Extract<SignalMessage, { type: 'updateSocketState' }>['data']
@@ -306,6 +331,7 @@ async function handleUpdateSocketState(
     // Handle rank queue toggle
     if (data.stateToUpdate.key === 'isRankQueued') {
         const isQueue = data.stateToUpdate.value === true;
+        if (isQueue && userToUpdate.currentMatchId) return;
         if (isQueue) {
             rankQueue.set(data.uid, {
                 uid: data.uid,

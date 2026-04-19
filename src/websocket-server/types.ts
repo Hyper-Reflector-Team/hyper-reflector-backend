@@ -62,6 +62,7 @@ export type EstimatePingUsersPayload = {
 export type SignalMessage =
     | { type: 'join'; user: SocketUser; lobbyId?: string; pass?: string }
     | { type: 'updateSocketState'; data: UpdateSocketStatePayload }
+    | { type: 'updateProfile'; user: SocketUser }
     | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean; gameName?: string }
     | { type: 'changeLobby'; newLobbyId: string; pass?: string; user: SocketUser }
     | {
