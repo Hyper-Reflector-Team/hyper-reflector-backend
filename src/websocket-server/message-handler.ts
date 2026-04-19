@@ -58,6 +58,20 @@ type PendingRankMatch = {
 };
 const pendingRankMatches = new Map<string, PendingRankMatch>();
 
+const ACTIVE_MATCH_TTL_MS = 4 * 60 * 60_000;
+setInterval(() => {
+    const now = Date.now();
+    for (const [matchId, match] of activeMatches.entries()) {
+        if (now - match.startedAt > ACTIVE_MATCH_TTL_MS) {
+            activeMatches.delete(matchId);
+            match.players.forEach(p => {
+                const user = connectedUsers.get(p.uid);
+                if (user) connectedUsers.set(p.uid, { ...user, currentMatchId: undefined });
+            });
+        }
+    }
+}, 60_000).unref();
+
 function broadcastUserListForUser(uid: string) {
     const lobbiesToBroadcast = new Set<string>();
     for (const [lobbyId, lobby] of lobbies.entries()) {
@@ -194,6 +208,14 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'userDisconnect': {
             const disconnectedUid = message.userUID ?? ctx.ws.uid;
             rankQueue.delete(disconnectedUid ?? '');
+            for (const [matchId, pending] of pendingRankMatches.entries()) {
+                if (pending.uidA === disconnectedUid || pending.uidB === disconnectedUid) {
+                    clearTimeout(pending.timeout);
+                    pendingRankMatches.delete(matchId);
+                    const otherUid = pending.uidA === disconnectedUid ? pending.uidB : pending.uidA;
+                    sendToUser(otherUid, { type: 'rank-queue-cancelled', matchId, reason: 'opponent-disconnected' });
+                }
+            }
             broadcastKillPeer(disconnectedUid, ctx.wss);
             forceCloseMatchForUser(disconnectedUid, ctx.wss, 'user-disconnected');
             break;
@@ -517,6 +539,12 @@ async function handleRequestMatch(
 
     const resolvedChallenger = connectedUsers.get(challengerId);
     const resolvedOpponent = connectedUsers.get(opponentId);
+
+    // Dedup: bail if a match between this pair is already active
+    const alreadyMatched = [...activeMatches.values()].some(
+        m => m.players.some(p => p.uid === challengerId) && m.players.some(p => p.uid === opponentId)
+    );
+    if (alreadyMatched) return;
 
     if (!resolvedChallenger || !resolvedOpponent) {
         if (ctx.ws.readyState === WebSocket.OPEN) {
@@ -1174,6 +1202,7 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, game
     const userA = connectedUsers.get(uidA);
     const userB = connectedUsers.get(uidB);
     if (!userA || !userB) return;
+    if (userA.ws?.readyState !== WebSocket.OPEN || userB.ws?.readyState !== WebSocket.OPEN) return;
 
     const resolvedMatchId = matchId ?? randomUUID();
     const resolvedGameName = gameName ?? null;
