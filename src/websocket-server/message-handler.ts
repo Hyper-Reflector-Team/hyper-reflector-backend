@@ -171,7 +171,7 @@ function notifyHolePunchKill(uid: string, peerUid?: string) {
 export async function handleMessage(ctx: MessageContext, message: SignalMessage) {
     switch (message.type) {
         case 'join':
-            await handleJoin(ctx, message.user, message.lobbyId);
+            await handleJoin(ctx, message.user, message.lobbyId, message.pass);
             break;
         case 'updateSocketState':
             await handleUpdateSocketState(ctx, message.data);
@@ -252,7 +252,7 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
     }
 }
 
-async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends never ? never : any, preferredLobbyId?: string) {
+async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends never ? never : any, preferredLobbyId?: string, pass?: string) {
     ctx.ws.uid = user.uid;
     ctx.ws.isAlive = true;
 
@@ -270,6 +270,11 @@ async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends
 
     const lobbyId = preferredLobbyId ?? user.lobbyId ?? DEFAULT_LOBBY_ID;
     ensureLobby(lobbyId);
+
+    if (pass && !lobbyMeta.has(lobbyId)) {
+        lobbyMeta.set(lobbyId, { pass, isPrivate: true, ownerUid: user.uid, gameName: undefined });
+    }
+
     syncUserToLobby(user.uid, lobbyId);
     broadcastUserList(lobbyId);
     broadcastLobbyCounts(ctx.wss);
@@ -341,6 +346,15 @@ async function handleUpdateSocketState(
     };
 
     connectedUsers.set(data.uid, updatedUser);
+
+    const allSubs = userSubscriptions.get(data.uid);
+    if (allSubs) {
+        for (const lobbyId of allSubs) {
+            const lobby = lobbies.get(lobbyId);
+            if (lobby?.has(data.uid)) lobby.set(data.uid, { ...updatedUser });
+        }
+    }
+
     syncUserToLobby(data.uid, data.lobbyId);
     broadcastUserListForUser(data.uid);
 
