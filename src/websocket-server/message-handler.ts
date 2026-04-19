@@ -606,7 +606,11 @@ async function handleSendMessage(sender: SocketUser | undefined, message: string
     const senderSubs = userSubscriptions.get(connectedSender.uid);
     const lobbyId =
         requestedLobbyId &&
-        (senderSubs?.has(requestedLobbyId) || userLobby.get(connectedSender.uid) === requestedLobbyId)
+        (
+            senderSubs?.has(requestedLobbyId) ||
+            userLobby.get(connectedSender.uid) === requestedLobbyId ||
+            lobbies.get(requestedLobbyId)?.has(connectedSender.uid)
+        )
             ? requestedLobbyId
             : userLobby.get(connectedSender.uid) ?? connectedSender.lobbyId ?? DEFAULT_LOBBY_ID;
 
