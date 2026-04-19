@@ -59,11 +59,13 @@ type PendingRankMatch = {
 const pendingRankMatches = new Map<string, PendingRankMatch>();
 
 function broadcastUserListForUser(uid: string) {
-    const subs = userSubscriptions.get(uid);
-    const primaryLobby = userLobby.get(uid) ?? DEFAULT_LOBBY_ID;
-    const lobbiesToBroadcast = new Set<string>([primaryLobby]);
-    if (subs) {
-        for (const lobbyId of subs) lobbiesToBroadcast.add(lobbyId);
+    const lobbiesToBroadcast = new Set<string>();
+    for (const [lobbyId, lobby] of lobbies.entries()) {
+        if (lobby.has(uid)) lobbiesToBroadcast.add(lobbyId);
+    }
+    if (lobbiesToBroadcast.size === 0) {
+        broadcastUserList(userLobby.get(uid) ?? DEFAULT_LOBBY_ID);
+        return;
     }
     for (const lobbyId of lobbiesToBroadcast) broadcastUserList(lobbyId);
 }
