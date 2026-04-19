@@ -1143,7 +1143,7 @@ function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, game
 
     const resolvedMatchId = matchId ?? randomUUID();
     const resolvedGameName = gameName ?? null;
-    const lobbyId = userLobby.get(uidA) ?? userLobby.get(uidB) ?? DEFAULT_LOBBY_ID;
+    const lobbyId = DEFAULT_LOBBY_ID;
     const serverPort = Number(serverInfo.PUNCH_PORT ?? 0) || 33334;
 
     const basePayload = {
