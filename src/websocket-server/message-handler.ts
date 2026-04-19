@@ -60,11 +60,12 @@ const pendingRankMatches = new Map<string, PendingRankMatch>();
 
 function broadcastUserListForUser(uid: string) {
     const subs = userSubscriptions.get(uid);
-    if (subs && subs.size > 0) {
-        for (const lobbyId of subs) broadcastUserList(lobbyId);
-    } else {
-        broadcastUserList(userLobby.get(uid) ?? DEFAULT_LOBBY_ID);
+    const primaryLobby = userLobby.get(uid) ?? DEFAULT_LOBBY_ID;
+    const lobbiesToBroadcast = new Set<string>([primaryLobby]);
+    if (subs) {
+        for (const lobbyId of subs) lobbiesToBroadcast.add(lobbyId);
     }
+    for (const lobbyId of lobbiesToBroadcast) broadcastUserList(lobbyId);
 }
 
 const getPairKey = (a: string, b: string) => [a, b].sort().join('::');
@@ -347,12 +348,14 @@ async function handleUpdateSocketState(
 
     connectedUsers.set(data.uid, updatedUser);
 
+    const primaryLobby = userLobby.get(data.uid);
     const allSubs = userSubscriptions.get(data.uid);
-    if (allSubs) {
-        for (const lobbyId of allSubs) {
-            const lobby = lobbies.get(lobbyId);
-            if (lobby?.has(data.uid)) lobby.set(data.uid, { ...updatedUser });
-        }
+    const lobbiesToSync = new Set<string>([...(allSubs ?? [])]);
+    if (primaryLobby) lobbiesToSync.add(primaryLobby);
+
+    for (const lobbyId of lobbiesToSync) {
+        const lobby = lobbies.get(lobbyId);
+        if (lobby?.has(data.uid)) lobby.set(data.uid, { ...updatedUser });
     }
 
     syncUserToLobby(data.uid, data.lobbyId);
