@@ -1032,7 +1032,7 @@ function tryRankMatch(_wss: WebSocketServer) {
         }
     }
 
-    if (!bestA || !bestB || bestScore > 1800) return;
+    if (!bestA || !bestB) return;
 
     const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfiii3nr1';
 
