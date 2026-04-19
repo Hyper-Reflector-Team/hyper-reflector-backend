@@ -1011,6 +1011,10 @@ async function handleSubscribeLobby(
         return;
     }
 
+    if (pass && !meta) {
+        lobbyMeta.set(lobbyId, { pass, isPrivate: true, ownerUid: user.uid, gameName: undefined });
+    }
+
     cancelLobbyTimeout(lobbyId);
     subscribeUserToLobby(user.uid, lobbyId);
     broadcastUserList(lobbyId);
