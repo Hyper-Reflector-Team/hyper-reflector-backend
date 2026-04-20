@@ -1115,7 +1115,7 @@ function tryRankMatch(_wss: WebSocketServer) {
 
     if (!bestA || !bestB) return;
 
-    const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfiii3nr1';
+    const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfa2';
 
     rankQueue.delete(bestA);
     rankQueue.delete(bestB);
