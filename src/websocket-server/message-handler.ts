@@ -362,7 +362,7 @@ async function handleUpdateSocketState(
                 lastKnownPings: Array.isArray(userToUpdate.lastKnownPings) ? userToUpdate.lastKnownPings : [],
                 lobbyId: data.lobbyId ?? userLobby.get(data.uid) ?? DEFAULT_LOBBY_ID,
                 queuedAt: Date.now(),
-                gameName: data.rankQueueGameName ?? 'sfiii3nr1',
+                gameName: data.rankQueueGameName ?? 'sfa2',
             });
             tryRankMatch(ctx.wss);
         } else {
