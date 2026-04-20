@@ -362,7 +362,7 @@ async function handleUpdateSocketState(
                 lastKnownPings: Array.isArray(userToUpdate.lastKnownPings) ? userToUpdate.lastKnownPings : [],
                 lobbyId: data.lobbyId ?? userLobby.get(data.uid) ?? DEFAULT_LOBBY_ID,
                 queuedAt: Date.now(),
-                gameName: data.rankQueueGameName ?? 'sfa2',
+                gameName: data.rankQueueGameName ?? 'sfiii3nr1',
             });
             tryRankMatch(ctx.wss);
         } else {
@@ -1115,7 +1115,7 @@ function tryRankMatch(_wss: WebSocketServer) {
 
     if (!bestA || !bestB) return;
 
-    const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfa2';
+    const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfiii3nr1';
 
     rankQueue.delete(bestA);
     rankQueue.delete(bestB);
