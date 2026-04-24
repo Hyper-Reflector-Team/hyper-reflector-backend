@@ -731,8 +731,10 @@ async function runWebrtcChallengeMode(cfg: ReturnType<typeof parseArgs>) {
     lobbyId: chosenLobby,
   })
   ok(`webrtc-ping-offer sent to ${cfg.targetUid} with lobbyId "${chosenLobby}"`)
-  console.log(`\n  \x1b[1mAction required:\x1b[0m Check the app — you should see a challenge notification in \x1b[33m"${chosenLobby}"\x1b[0m`)
-  inf('  Accept or decline it. Waiting up to 60 seconds...\n')
+  console.log(`\n  \x1b[1mAction required:\x1b[0m Check the app — the challenge notification should appear in \x1b[33m"${chosenLobby}"\x1b[0m`)
+  inf('  Accept or Decline the challenge. Waiting up to 60 seconds...')
+  inf('  Note: WebRTC will not fully negotiate (bot uses a dummy SDP), but the notification')
+  inf('  routing and accept/decline flow are fully tested.\n')
 
   header('Step 4: Waiting for Response')
   try {
@@ -742,11 +744,11 @@ async function runWebrtcChallengeMode(cfg: ReturnType<typeof parseArgs>) {
       60_000
     )
     if (response.type === 'webrtc-ping-answer') {
-      ok('webrtc-ping-answer received — challenge was accepted')
-      inf('WebRTC will not fully negotiate (dummy SDP), but the notification flow is confirmed.')
+      ok('webrtc-ping-answer received — challenge accepted and answer sent back')
     } else {
-      ok('webrtc-ping-decline received — challenge was declined')
+      ok('webrtc-ping-decline received — challenge was declined (or WebRTC setup failed after accept)')
     }
+    ok('Challenge notification flow confirmed for lobby: ' + chosenLobby)
   } catch (e: any) {
     fail(`No response within 60s: ${e.message}`)
     inf('The notification may not have appeared, or the lobby routing may be incorrect.')
