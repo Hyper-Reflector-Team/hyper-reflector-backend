@@ -851,14 +851,19 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
   await new Promise(r => setTimeout(r, 200))
 
   // Step 3 — enter ranked queue
+  // Use a unique game name derived from the run ID so these two bots can only
+  // ever match each other — prevents one bot from pairing with a real player
+  // who happens to be queuing with the same game.
+  const rankTestGame = `rank-bot-test-${runId}`
   header('Step 3: Enter Ranked Queue')
+  inf(`Queue game name: "${rankTestGame}" (isolated per run)`)
   const queuePayload = (uid: string, lobbyId: string) => ({
     type: 'updateSocketState',
     data: {
       uid,
       lobbyId,
       stateToUpdate: { key: 'isRankQueued', value: true },
-      rankQueueGameName: cfg.gameName,
+      rankQueueGameName: rankTestGame,
     },
   })
   wsSend(wsA, queuePayload(BOT_A.uid, BOT_A.lobbyId))
@@ -875,14 +880,22 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
     ])
     ok('rank-queue-pending received by both bots')
     inf(`Match ID   : ${pendingA.matchId}`)
-    inf(`Player A   : ${pendingA.playerA?.userName} (elo ${pendingA.playerA?.accountElo})`)
-    inf(`Player B   : ${pendingA.playerB?.userName} (elo ${pendingA.playerB?.accountElo})`)
+    inf(`Player A   : ${pendingA.playerA?.userName} (uid: ${pendingA.playerA?.uid})`)
+    inf(`Player B   : ${pendingA.playerB?.userName} (uid: ${pendingA.playerB?.uid})`)
   } catch (e: any) {
     fail(`rank-queue-pending not received: ${e.message}`)
     disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
   }
 
   const matchId: string = pendingA.matchId
+
+  // Sanity check: ensure the match is between our two bots, not a real player
+  const matchedUids = new Set([pendingA.playerA?.uid, pendingA.playerB?.uid])
+  if (!matchedUids.has(BOT_A.uid) || !matchedUids.has(BOT_B.uid)) {
+    fail(`Matched unexpected opponents: ${[...matchedUids].join(' vs ')} — expected our two bots`)
+    inf('This should not happen with the isolated game name. Check for stale server state.')
+    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+  }
 
   // Step 5 — respond based on sub-mode
   if (cfg.rankTimeout) {
