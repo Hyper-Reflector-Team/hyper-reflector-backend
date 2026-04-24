@@ -441,6 +441,11 @@ async function runChallengeMode(cfg: ReturnType<typeof parseArgs>) {
   ok(`Chosen lobby: "${chosenLobby}"`)
 
   header('Step 3: Request Match')
+  wsSend(ws, {
+    type: 'sendMessage',
+    sender: { uid: BOT.uid, userName: BOT.userName, lobbyId: chosenLobby },
+    message: "Here's johnny!",
+  })
   log('info', `Bot challenging ${cfg.targetUid} in "${chosenLobby}"...`)
   wsSend(ws, {
     type: 'request-match',
