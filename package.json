@@ -11,7 +11,8 @@
     "test:signal": "npx ts-node src/tests/match-flow-test.ts --skip-emu --skip-punch",
     "test:punch": "npx ts-node src/tests/match-flow-test.ts --skip-emu",
     "test:wait": "npx ts-node src/tests/match-flow-test.ts --wait",
-    "test:challenge": "npx ts-node src/tests/match-flow-test.ts --target LcPLpfKXB0ON0UoIP9esWe73UJu2"
+    "test:challenge": "npx ts-node src/tests/match-flow-test.ts --target LcPLpfKXB0ON0UoIP9esWe73UJu2",
+    "test:webrtc-challenge": "npx ts-node src/tests/match-flow-test.ts --webrtc --target LcPLpfKXB0ON0UoIP9esWe73UJu2"
   },
   "author": "",
   "license": "ISC",

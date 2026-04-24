@@ -20,6 +20,11 @@
  *     Bot challenges your real account directly via request-match (bypasses WebRTC).
  *     Good for quickly testing the match-start + hole punch path in isolation.
  *
+ *   WEBRTC CHALLENGE MODE  (--webrtc --target <uid>)
+ *     Bot discovers which lobbies the target is in, picks one at random, and sends
+ *     a webrtc-ping-offer with that lobbyId. Tests the full challenge notification
+ *     UI — you should see the popup in the correct lobby and can accept or decline.
+ *
  *   BOT-VS-BOT MODE  (default, no --wait / --target)
  *     Two bots run the full server-side flow between themselves.
  *     Useful when the app isn't running.
@@ -32,6 +37,7 @@
  * Usage:
  *   npm run test:wait                          ← recommended first test
  *   npm run test:challenge                     ← quick match-start check
+ *   npm run test:webrtc-challenge              ← challenge notification + lobby routing
  *   npm run test:signal                        ← signal server only, no other deps
  *   npm run test:punch                         ← signal + hole punch
  *   npm test -- <emulator-path>                ← bot-vs-bot with emulator
@@ -39,6 +45,7 @@
  * All options:
  *   --wait               Wait-for-challenge mode
  *   --target <uid>       Challenge mode: your Firebase UID
+ *   --webrtc             Use webrtc-ping-offer instead of request-match (requires --target)
  *   --bot-name <name>    Bot display name  (default: TestBot)
  *   --game <rom>         ROM name          (default: sfiii3nr1)
  *   --skip-punch         Skip hole punch step
@@ -70,12 +77,14 @@ function parseArgs() {
     emulatorPath: '',
     luaPath:      '',
     waitMode:     false,
+    webrtcMode:   false,
     skipEmulator: false,
     skipPunch:    false,
   }
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--wait':       cfg.waitMode     = true;           break
+      case '--webrtc':     cfg.webrtcMode   = true;           break
       case '--target':     cfg.targetUid    = argv[++i];      break
       case '--bot-name':   cfg.botName      = argv[++i];      break
       case '--game':       cfg.gameName     = argv[++i];      break
@@ -624,13 +633,138 @@ async function runBotVsBotMode(cfg: ReturnType<typeof parseArgs>) {
   })
 }
 
+// ── WEBRTC CHALLENGE MODE ─────────────────────────────────────────────────────
+// Bot discovers which lobbies the target is in, picks one at random, and sends
+// a webrtc-ping-offer with that lobbyId. The target should see the challenge
+// notification in the correct lobby and can accept or decline manually.
+
+async function runWebrtcChallengeMode(cfg: ReturnType<typeof parseArgs>) {
+  const runId = Date.now()
+  const INITIAL_LOBBY = 'Hyper Reflector'
+  const BOT = {
+    uid:            `test-bot-${runId}`,
+    userName:       cfg.botName,
+    accountElo:     1200,
+    lobbyId:        INITIAL_LOBBY,
+    userEmail:      'bot@test.local',
+    countryCode:    'US',
+    lastKnownPings: [] as any[],
+  }
+
+  console.log(`\n\x1b[1m=== WebRTC Challenge Mode ===\x1b[0m`)
+  inf(`Signal server : ${cfg.signalUrl}`)
+  inf(`Target UID    : ${cfg.targetUid}`)
+  inf(`Game          : ${cfg.gameName}`)
+
+  header('Step 1: Connect + Join')
+  let ws!: WebSocket
+  try {
+    ws = await wsConnect(cfg.signalUrl)
+    ok('Connected')
+  } catch (e: any) {
+    fail(`Connection failed: ${e.message}`)
+    process.exit(1)
+  }
+
+  const lobbyUsers = new Map<string, string[]>()
+  let lobbyCounts: any[] = []
+  const lobbyDataHandler = (raw: WebSocket.RawData) => {
+    try {
+      const p = JSON.parse(raw.toString())
+      if (p.type === 'connected-users' && p.lobbyId) {
+        lobbyUsers.set(p.lobbyId, (p.users ?? []).map((u: any) => u.uid))
+      }
+      if (p.type === 'lobby-user-counts' && p.updates) {
+        lobbyCounts = p.updates
+      }
+    } catch {}
+  }
+  ws.on('message', lobbyDataHandler)
+
+  wsSend(ws, { type: 'join', user: BOT, lobbyId: INITIAL_LOBBY })
+  try {
+    await waitFor(ws, p => p.type === 'connected-users')
+    ok(`Bot joined "${INITIAL_LOBBY}"`)
+  } catch (e: any) {
+    fail(`Join failed: ${e.message}`)
+    disconnectBot(ws, BOT.uid); process.exit(1)
+  }
+
+  await new Promise(r => setTimeout(r, 500))
+
+  header('Step 2: Discover Target Lobbies')
+  const toSubscribe = lobbyCounts
+    .filter((l: any) => l.name !== INITIAL_LOBBY && !l.isPrivate && l.users > 0)
+    .map((l: any) => l.name as string)
+    .slice(0, 4)
+
+  if (toSubscribe.length > 0) {
+    inf(`Subscribing to ${toSubscribe.length} additional lobby(ies) to find target...`)
+    for (const lobbyId of toSubscribe) {
+      wsSend(ws, { type: 'subscribeLobby', lobbyId, user: BOT })
+    }
+    await new Promise(r => setTimeout(r, 1500))
+  }
+
+  ws.off('message', lobbyDataHandler)
+
+  const targetLobbies = [...lobbyUsers.entries()]
+    .filter(([, uids]) => uids.includes(cfg.targetUid))
+    .map(([lobbyId]) => lobbyId)
+
+  if (targetLobbies.length === 0) {
+    fail(`Target ${cfg.targetUid} not found in any visible lobby — make sure the app is open and logged in`)
+    disconnectBot(ws, BOT.uid); process.exit(1)
+  }
+
+  const chosenLobby = targetLobbies[Math.floor(Math.random() * targetLobbies.length)]
+  ok(`Target found in ${targetLobbies.length} lobby(ies): ${targetLobbies.join(', ')}`)
+  ok(`Chosen lobby: "${chosenLobby}"`)
+
+  header('Step 3: Send WebRTC Offer')
+  const dummyOffer = { type: 'offer', sdp: 'v=0\r\n' }
+  wsSend(ws, {
+    type:    'webrtc-ping-offer',
+    to:      cfg.targetUid,
+    from:    BOT.uid,
+    offer:   dummyOffer,
+    lobbyId: chosenLobby,
+  })
+  ok(`webrtc-ping-offer sent to ${cfg.targetUid} with lobbyId "${chosenLobby}"`)
+  console.log(`\n  \x1b[1mAction required:\x1b[0m Check the app — you should see a challenge notification in \x1b[33m"${chosenLobby}"\x1b[0m`)
+  inf('  Accept or decline it. Waiting up to 60 seconds...\n')
+
+  header('Step 4: Waiting for Response')
+  try {
+    const response = await waitFor(
+      ws,
+      p => (p.type === 'webrtc-ping-answer' || p.type === 'webrtc-ping-decline') && p.from === cfg.targetUid,
+      60_000
+    )
+    if (response.type === 'webrtc-ping-answer') {
+      ok('webrtc-ping-answer received — challenge was accepted')
+      inf('WebRTC will not fully negotiate (dummy SDP), but the notification flow is confirmed.')
+    } else {
+      ok('webrtc-ping-decline received — challenge was declined')
+    }
+  } catch (e: any) {
+    fail(`No response within 60s: ${e.message}`)
+    inf('The notification may not have appeared, or the lobby routing may be incorrect.')
+    disconnectBot(ws, BOT.uid); process.exit(1)
+  }
+
+  console.log('\n\x1b[32m✓ WebRTC challenge notification flow confirmed.\x1b[0m\n')
+  disconnectBot(ws, BOT.uid)
+}
+
 // ── Entry ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const cfg = parseArgs()
-  if (cfg.waitMode)       await runWaitMode(cfg)
-  else if (cfg.targetUid) await runChallengeMode(cfg)
-  else                    await runBotVsBotMode(cfg)
+  if (cfg.waitMode)                        await runWaitMode(cfg)
+  else if (cfg.webrtcMode && cfg.targetUid) await runWebrtcChallengeMode(cfg)
+  else if (cfg.targetUid)                  await runChallengeMode(cfg)
+  else                                     await runBotVsBotMode(cfg)
 }
 
 main().catch((e) => { console.error('\n\x1b[31mError:\x1b[0m', e); process.exit(1) })
