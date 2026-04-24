@@ -341,15 +341,17 @@ async function runWaitMode(cfg: ReturnType<typeof parseArgs>) {
 }
 
 // ── CHALLENGE MODE ────────────────────────────────────────────────────────────
-// Bot sends request-match directly to your real UID (bypasses WebRTC).
+// Bot discovers which lobbies the target is in, picks one randomly, and sends
+// request-match directly to your real UID (bypasses WebRTC).
 
 async function runChallengeMode(cfg: ReturnType<typeof parseArgs>) {
   const runId = Date.now()
+  const INITIAL_LOBBY = 'Hyper Reflector'
   const BOT = {
     uid:            `test-bot-${runId}`,
     userName:       cfg.botName,
     accountElo:     1200,
-    lobbyId:        'Hyper Reflector',
+    lobbyId:        INITIAL_LOBBY,
     userEmail:      'bot@test.local',
     countryCode:    'US',
     lastKnownPings: [] as any[],
@@ -371,25 +373,72 @@ async function runChallengeMode(cfg: ReturnType<typeof parseArgs>) {
     process.exit(1)
   }
 
-  wsSend(ws, { type: 'join', user: BOT, lobbyId: BOT.lobbyId })
+  // Collect lobby membership from connected-users broadcasts (which include lobbyId)
+  const lobbyUsers = new Map<string, string[]>()
+  let lobbyCounts: any[] = []
+  const lobbyDataHandler = (raw: WebSocket.RawData) => {
+    try {
+      const p = JSON.parse(raw.toString())
+      if (p.type === 'connected-users' && p.lobbyId) {
+        lobbyUsers.set(p.lobbyId, (p.users ?? []).map((u: any) => u.uid))
+      }
+      if (p.type === 'lobby-user-counts' && p.updates) {
+        lobbyCounts = p.updates
+      }
+    } catch {}
+  }
+  ws.on('message', lobbyDataHandler)
+
+  wsSend(ws, { type: 'join', user: BOT, lobbyId: INITIAL_LOBBY })
   try {
     await waitFor(ws, p => p.type === 'connected-users')
-    ok(`Bot joined "${BOT.lobbyId}"`)
+    ok(`Bot joined "${INITIAL_LOBBY}"`)
   } catch (e: any) {
     fail(`Join failed: ${e.message}`)
     disconnectBot(ws, BOT.uid); process.exit(1)
   }
 
-  await new Promise(r => setTimeout(r, 300))
+  // Wait for lobby-user-counts to arrive after join
+  await new Promise(r => setTimeout(r, 500))
 
-  header('Step 2: Request Match')
-  log('info', `Bot challenging ${cfg.targetUid}...`)
+  header('Step 2: Discover Target Lobbies')
+  // Subscribe to all non-private lobbies (up to 4 more since we're already in one)
+  const toSubscribe = lobbyCounts
+    .filter((l: any) => l.name !== INITIAL_LOBBY && !l.isPrivate && l.users > 0)
+    .map((l: any) => l.name as string)
+    .slice(0, 4)
+
+  if (toSubscribe.length > 0) {
+    inf(`Subscribing to ${toSubscribe.length} additional lobby(ies) to find target...`)
+    for (const lobbyId of toSubscribe) {
+      wsSend(ws, { type: 'subscribeLobby', lobbyId, user: BOT })
+    }
+    await new Promise(r => setTimeout(r, 1500))
+  }
+
+  ws.off('message', lobbyDataHandler)
+
+  const targetLobbies = [...lobbyUsers.entries()]
+    .filter(([, uids]) => uids.includes(cfg.targetUid))
+    .map(([lobbyId]) => lobbyId)
+
+  if (targetLobbies.length === 0) {
+    fail(`Target ${cfg.targetUid} not found in any visible lobby — make sure the app is open and logged in`)
+    disconnectBot(ws, BOT.uid); process.exit(1)
+  }
+
+  const chosenLobby = targetLobbies[Math.floor(Math.random() * targetLobbies.length)]
+  ok(`Target found in ${targetLobbies.length} lobby(ies): ${targetLobbies.join(', ')}`)
+  ok(`Chosen lobby: "${chosenLobby}"`)
+
+  header('Step 3: Request Match')
+  log('info', `Bot challenging ${cfg.targetUid} in "${chosenLobby}"...`)
   wsSend(ws, {
     type: 'request-match',
     challengerId: BOT.uid,
     opponentId:   cfg.targetUid,
     requestedBy:  BOT.uid,
-    lobbyId:      BOT.lobbyId,
+    lobbyId:      chosenLobby,
     gameName:     cfg.gameName,
   })
 
@@ -407,7 +456,7 @@ async function runChallengeMode(cfg: ReturnType<typeof parseArgs>) {
   }
 
   if (!cfg.skipPunch) {
-    header('Step 3: Hole Punch (bot side)')
+    header('Step 4: Hole Punch (bot side)')
     inf(`Registering with ${cfg.punchHost}:${cfg.punchPort}...`)
     try {
       const peer = await holePunch(BOT.uid, cfg.targetUid, cfg.punchHost, cfg.punchPort)
