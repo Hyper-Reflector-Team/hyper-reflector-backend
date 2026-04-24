@@ -25,6 +25,15 @@
  *     a webrtc-ping-offer with that lobbyId. Tests the full challenge notification
  *     UI — you should see the popup in the correct lobby and can accept or decline.
  *
+ *   RANKED QUEUE MODE  (--rank)
+ *     Two bots enter the ranked queue and test the full matchmaking flow:
+ *       ✓ Both bots matched via updateSocketState isRankQueued=true
+ *       ✓ rank-queue-pending received by both
+ *       ✓ Both send rank-queue-accept → match-start with isRanked=true
+ *       ✓ Hole punch (both sides, optional)
+ *     Sub-modes via --rank-decline: one bot declines → rank-queue-cancelled
+ *     Sub-modes via --rank-timeout: neither accepts → rank-queue-timeout after 30s
+ *
  *   BOT-VS-BOT MODE  (default, no --wait / --target)
  *     Two bots run the full server-side flow between themselves.
  *     Useful when the app isn't running.
@@ -38,6 +47,9 @@
  *   npm run test:wait                          ← recommended first test
  *   npm run test:challenge                     ← quick match-start check
  *   npm run test:webrtc-challenge              ← challenge notification + lobby routing
+ *   npm run test:rank                          ← ranked queue bot-vs-bot (both accept)
+ *   npm run test:rank:decline                  ← ranked queue: one bot declines
+ *   npm run test:rank:timeout                  ← ranked queue: timeout path (waits 30s)
  *   npm run test:signal                        ← signal server only, no other deps
  *   npm run test:punch                         ← signal + hole punch
  *   npm test -- <emulator-path>                ← bot-vs-bot with emulator
@@ -46,6 +58,9 @@
  *   --wait               Wait-for-challenge mode
  *   --target <uid>       Challenge mode: your Firebase UID
  *   --webrtc             Use webrtc-ping-offer instead of request-match (requires --target)
+ *   --rank               Ranked queue mode (two bots)
+ *   --rank-decline       Ranked queue: Bot B declines the match
+ *   --rank-timeout       Ranked queue: neither bot accepts (tests 30s timeout)
  *   --bot-name <name>    Bot display name  (default: TestBot)
  *   --game <rom>         ROM name          (default: sfiii3nr1)
  *   --skip-punch         Skip hole punch step
@@ -78,14 +93,20 @@ function parseArgs() {
     luaPath:      '',
     waitMode:     false,
     webrtcMode:   false,
+    rankMode:     false,
+    rankDecline:  false,
+    rankTimeout:  false,
     skipEmulator: false,
     skipPunch:    false,
   }
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
-      case '--wait':       cfg.waitMode     = true;           break
-      case '--webrtc':     cfg.webrtcMode   = true;           break
-      case '--target':     cfg.targetUid    = argv[++i];      break
+      case '--wait':         cfg.waitMode     = true;           break
+      case '--webrtc':       cfg.webrtcMode   = true;           break
+      case '--rank':         cfg.rankMode     = true;           break
+      case '--rank-decline': cfg.rankDecline  = true; cfg.rankMode = true; break
+      case '--rank-timeout': cfg.rankTimeout  = true; cfg.rankMode = true; break
+      case '--target':       cfg.targetUid    = argv[++i];      break
       case '--bot-name':   cfg.botName      = argv[++i];      break
       case '--game':       cfg.gameName     = argv[++i];      break
       case '--skip-emu':   cfg.skipEmulator = true;           break
@@ -769,14 +790,197 @@ async function runWebrtcChallengeMode(cfg: ReturnType<typeof parseArgs>) {
   disconnectBot(ws, BOT.uid)
 }
 
+// ── RANKED QUEUE MODE ─────────────────────────────────────────────────────────
+// Two bots enter the ranked queue and exercise the full matchmaking flow.
+// --rank-decline: Bot B declines → both receive rank-queue-cancelled
+// --rank-timeout: neither accepts → both receive rank-queue-timeout after 30s
+// default:        both accept    → match-start with isRanked=true
+
+async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
+  const runId = Date.now()
+  const BOT_A = {
+    uid:            `rank-bot-a-${runId}`,
+    userName:       `${cfg.botName}A`,
+    accountElo:     1200,
+    lobbyId:        'Hyper Reflector',
+    userEmail:      'rank-a@test.local',
+    countryCode:    'US',
+    lastKnownPings: [] as any[],
+  }
+  const BOT_B = {
+    uid:            `rank-bot-b-${runId}`,
+    userName:       `${cfg.botName}B`,
+    accountElo:     1200,
+    lobbyId:        'Hyper Reflector',
+    userEmail:      'rank-b@test.local',
+    countryCode:    'US',
+    lastKnownPings: [] as any[],
+  }
+
+  const subMode = cfg.rankDecline ? 'decline' : cfg.rankTimeout ? 'timeout' : 'accept'
+  console.log(`\n\x1b[1m=== Ranked Queue Mode (${subMode}) ===\x1b[0m`)
+  inf(`Signal server : ${cfg.signalUrl}`)
+  inf(`Hole punch    : ${cfg.punchHost}:${cfg.punchPort}${cfg.skipPunch ? ' (skipped)' : ''}`)
+  inf(`Game          : ${cfg.gameName}`)
+
+  // Step 1 — connect both bots
+  header('Step 1: Connect')
+  let wsA!: WebSocket, wsB!: WebSocket
+  try {
+    ;[wsA, wsB] = await Promise.all([wsConnect(cfg.signalUrl), wsConnect(cfg.signalUrl)])
+    ok('Both bots connected')
+  } catch (e: any) {
+    fail(`Connection failed: ${e.message}`); process.exit(1)
+  }
+
+  // Step 2 — join lobby
+  header('Step 2: Join Lobby')
+  wsSend(wsA, { type: 'join', user: BOT_A, lobbyId: BOT_A.lobbyId })
+  wsSend(wsB, { type: 'join', user: BOT_B, lobbyId: BOT_B.lobbyId })
+  try {
+    await Promise.all([
+      waitFor(wsA, p => p.type === 'connected-users'),
+      waitFor(wsB, p => p.type === 'connected-users'),
+    ])
+    ok(`Both bots joined "${BOT_A.lobbyId}"`)
+  } catch (e: any) {
+    fail(`Join failed: ${e.message}`)
+    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+  }
+
+  await new Promise(r => setTimeout(r, 200))
+
+  // Step 3 — enter ranked queue
+  header('Step 3: Enter Ranked Queue')
+  const queuePayload = (uid: string, lobbyId: string) => ({
+    type: 'updateSocketState',
+    data: {
+      uid,
+      lobbyId,
+      stateToUpdate: { key: 'isRankQueued', value: true },
+      rankQueueGameName: cfg.gameName,
+    },
+  })
+  wsSend(wsA, queuePayload(BOT_A.uid, BOT_A.lobbyId))
+  wsSend(wsB, queuePayload(BOT_B.uid, BOT_B.lobbyId))
+  ok('Both bots queued — waiting for rank-queue-pending...')
+
+  // Step 4 — wait for match found
+  header('Step 4: Match Found')
+  let pendingA: any
+  try {
+    ;[pendingA] = await Promise.all([
+      waitFor(wsA, p => p.type === 'rank-queue-pending'),
+      waitFor(wsB, p => p.type === 'rank-queue-pending'),
+    ])
+    ok('rank-queue-pending received by both bots')
+    inf(`Match ID   : ${pendingA.matchId}`)
+    inf(`Player A   : ${pendingA.playerA?.userName} (elo ${pendingA.playerA?.accountElo})`)
+    inf(`Player B   : ${pendingA.playerB?.userName} (elo ${pendingA.playerB?.accountElo})`)
+  } catch (e: any) {
+    fail(`rank-queue-pending not received: ${e.message}`)
+    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+  }
+
+  const matchId: string = pendingA.matchId
+
+  // Step 5 — respond based on sub-mode
+  if (cfg.rankTimeout) {
+    header('Step 5: Timeout Path (waiting up to 35s)')
+    inf('Neither bot will accept — waiting for rank-queue-timeout...')
+    try {
+      const [timeoutA] = await Promise.all([
+        waitFor(wsA, p => p.type === 'rank-queue-timeout' && p.matchId === matchId, 35_000),
+        waitFor(wsB, p => p.type === 'rank-queue-timeout' && p.matchId === matchId, 35_000),
+      ])
+      ok('rank-queue-timeout received by both bots')
+      inf(`Match ID: ${timeoutA.matchId}`)
+    } catch (e: any) {
+      fail(`rank-queue-timeout not received: ${e.message}`)
+      disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    }
+    console.log('\n\x1b[32m✓ Ranked queue timeout path confirmed.\x1b[0m\n')
+    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid)
+    return
+  }
+
+  if (cfg.rankDecline) {
+    header('Step 5: Decline Path')
+    inf('Bot B declining...')
+    wsSend(wsB, { type: 'rank-queue-decline', matchId, uid: BOT_B.uid })
+    try {
+      const [cancelA, cancelB] = await Promise.all([
+        waitFor(wsA, p => p.type === 'rank-queue-cancelled' && p.matchId === matchId),
+        waitFor(wsB, p => p.type === 'rank-queue-cancelled' && p.matchId === matchId),
+      ])
+      ok('rank-queue-cancelled received by both bots')
+      inf(`Bot A reason: ${cancelA.reason}`)
+      inf(`Bot B reason: ${cancelB.reason}`)
+    } catch (e: any) {
+      fail(`rank-queue-cancelled not received: ${e.message}`)
+      disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    }
+    console.log('\n\x1b[32m✓ Ranked queue decline path confirmed.\x1b[0m\n')
+    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid)
+    return
+  }
+
+  // Default: both accept
+  header('Step 5: Both Accept')
+  wsSend(wsA, { type: 'rank-queue-accept', matchId, uid: BOT_A.uid })
+  wsSend(wsB, { type: 'rank-queue-accept', matchId, uid: BOT_B.uid })
+
+  let matchStartA: any, matchStartB: any
+  try {
+    ;[matchStartA, matchStartB] = await Promise.all([
+      waitFor(wsA, p => p.type === 'match-start' && p.matchId === matchId),
+      waitFor(wsB, p => p.type === 'match-start' && p.matchId === matchId),
+    ])
+    ok('match-start received by both bots')
+    inf(`Match ID  : ${matchStartA.matchId}`)
+    inf(`Slots     : A=${matchStartA.playerSlot}  B=${matchStartB.playerSlot}`)
+    inf(`isRanked  : ${matchStartA.isRanked}`)
+    inf(`Server    : ${matchStartA.serverHost}:${matchStartA.serverPort}`)
+    if (!matchStartA.isRanked) warn('isRanked flag is missing or false on match-start')
+  } catch (e: any) {
+    fail(`match-start not received: ${e.message}`)
+    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+  }
+
+  if (!cfg.skipPunch) {
+    header('Step 6: Hole Punch')
+    log('info', `Both bots registering with ${cfg.punchHost}:${cfg.punchPort}...`)
+    try {
+      const [peerA, peerB] = await Promise.all([
+        holePunch(BOT_A.uid, BOT_B.uid, cfg.punchHost, cfg.punchPort),
+        holePunch(BOT_B.uid, BOT_A.uid, cfg.punchHost, cfg.punchPort),
+      ])
+      ok('Hole punch exchange complete')
+      inf(`Bot A sees Bot B at ${peerA.address}:${peerA.port}`)
+      inf(`Bot B sees Bot A at ${peerB.address}:${peerB.port}`)
+    } catch (e: any) {
+      fail(`Hole punch failed: ${e.message}`)
+      disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    }
+  } else {
+    header('Step 6: Hole Punch'); inf('Skipped (--skip-punch)')
+  }
+
+  console.log('\n\x1b[32m✓ Ranked queue accept path confirmed.\x1b[0m\n')
+  try { wsSend(wsA, { type: 'matchEnd', userUID: BOT_A.uid }) } catch {}
+  try { wsSend(wsB, { type: 'matchEnd', userUID: BOT_B.uid }) } catch {}
+  setTimeout(() => { disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid) }, 300)
+}
+
 // ── Entry ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const cfg = parseArgs()
-  if (cfg.waitMode)                        await runWaitMode(cfg)
+  if (cfg.waitMode)                         await runWaitMode(cfg)
   else if (cfg.webrtcMode && cfg.targetUid) await runWebrtcChallengeMode(cfg)
-  else if (cfg.targetUid)                  await runChallengeMode(cfg)
-  else                                     await runBotVsBotMode(cfg)
+  else if (cfg.rankMode)                    await runRankQueueMode(cfg)
+  else if (cfg.targetUid)                   await runChallengeMode(cfg)
+  else                                      await runBotVsBotMode(cfg)
 }
 
 main().catch((e) => { console.error('\n\x1b[31mError:\x1b[0m', e); process.exit(1) })
