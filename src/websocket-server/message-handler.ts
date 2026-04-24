@@ -286,12 +286,20 @@ async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends
 
     const now = Date.now();
     const existing = connectedUsers.get(user.uid);
+
+    // If this UID was in the ranked queue from a previous session, remove it so
+    // the reconnecting client starts fresh and doesn't get matched silently.
+    if (existing && rankQueue.has(user.uid)) {
+        rankQueue.delete(user.uid);
+    }
+
     const connectedUser: ConnectedUser = {
         ...existing,
         ...user,
         ws: ctx.ws,
         joinedAt: existing?.joinedAt ?? now,
         lastHeartbeat: now,
+        isRankQueued: false,
     };
 
     connectedUsers.set(user.uid, connectedUser);
