@@ -727,6 +727,11 @@ async function runWebrtcChallengeMode(cfg: ReturnType<typeof parseArgs>) {
   ok(`Chosen lobby: "${chosenLobby}"`)
 
   header('Step 3: Send WebRTC Offer')
+  wsSend(ws, {
+    type: 'sendMessage',
+    sender: { uid: BOT.uid, userName: BOT.userName, lobbyId: chosenLobby },
+    message: "Here's johnny!",
+  })
   const dummyOffer = { type: 'offer', sdp: 'v=0\r\n' }
   wsSend(ws, {
     type:    'webrtc-ping-offer',
