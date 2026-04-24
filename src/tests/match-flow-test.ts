@@ -823,6 +823,31 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
   inf(`Hole punch    : ${cfg.punchHost}:${cfg.punchPort}${cfg.skipPunch ? ' (skipped)' : ''}`)
   inf(`Game          : ${cfg.gameName}`)
 
+  // Cleanup helper — call from every exit path (success, failure, and SIGINT)
+  let cleanedUp = false
+  let matchStarted = false
+  const cleanup = (withMatchEnd = matchStarted) => {
+    if (cleanedUp) return
+    cleanedUp = true
+    if (withMatchEnd) {
+      try { wsSend(wsA, { type: 'matchEnd', userUID: BOT_A.uid }) } catch {}
+      try { wsSend(wsB, { type: 'matchEnd', userUID: BOT_B.uid }) } catch {}
+    }
+    setTimeout(() => {
+      disconnectBot(wsA, BOT_A.uid)
+      disconnectBot(wsB, BOT_B.uid)
+      process.exit(0)
+    }, 300)
+  }
+  const cleanupAndFail = () => {
+    if (cleanedUp) return
+    cleanedUp = true
+    disconnectBot(wsA, BOT_A.uid)
+    disconnectBot(wsB, BOT_B.uid)
+    process.exit(1)
+  }
+  process.on('SIGINT', () => { log('cleanup', 'interrupted'); cleanup(false) })
+
   // Step 1 — connect both bots
   header('Step 1: Connect')
   let wsA!: WebSocket, wsB!: WebSocket
@@ -845,7 +870,7 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
     ok(`Both bots joined "${BOT_A.lobbyId}"`)
   } catch (e: any) {
     fail(`Join failed: ${e.message}`)
-    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    cleanupAndFail()
   }
 
   await new Promise(r => setTimeout(r, 200))
@@ -884,7 +909,7 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
     inf(`Player B   : ${pendingA.playerB?.userName} (uid: ${pendingA.playerB?.uid})`)
   } catch (e: any) {
     fail(`rank-queue-pending not received: ${e.message}`)
-    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    cleanupAndFail()
   }
 
   const matchId: string = pendingA.matchId
@@ -894,7 +919,7 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
   if (!matchedUids.has(BOT_A.uid) || !matchedUids.has(BOT_B.uid)) {
     fail(`Matched unexpected opponents: ${[...matchedUids].join(' vs ')} — expected our two bots`)
     inf('This should not happen with the isolated game name. Check for stale server state.')
-    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    cleanupAndFail()
   }
 
   // Step 5 — respond based on sub-mode
@@ -910,10 +935,10 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
       inf(`Match ID: ${timeoutA.matchId}`)
     } catch (e: any) {
       fail(`rank-queue-timeout not received: ${e.message}`)
-      disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+      cleanupAndFail()
     }
     console.log('\n\x1b[32m✓ Ranked queue timeout path confirmed.\x1b[0m\n')
-    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid)
+    cleanup(false)
     return
   }
 
@@ -931,15 +956,16 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
       inf(`Bot B reason: ${cancelB.reason}`)
     } catch (e: any) {
       fail(`rank-queue-cancelled not received: ${e.message}`)
-      disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+      cleanupAndFail()
     }
     console.log('\n\x1b[32m✓ Ranked queue decline path confirmed.\x1b[0m\n')
-    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid)
+    cleanup(false)
     return
   }
 
   // Default: both accept
   header('Step 5: Both Accept')
+  matchStarted = true
   wsSend(wsA, { type: 'rank-queue-accept', matchId, uid: BOT_A.uid })
   wsSend(wsB, { type: 'rank-queue-accept', matchId, uid: BOT_B.uid })
 
@@ -957,7 +983,7 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
     if (!matchStartA.isRanked) warn('isRanked flag is missing or false on match-start')
   } catch (e: any) {
     fail(`match-start not received: ${e.message}`)
-    disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+    cleanupAndFail()
   }
 
   if (!cfg.skipPunch) {
@@ -973,16 +999,14 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
       inf(`Bot B sees Bot A at ${peerB.address}:${peerB.port}`)
     } catch (e: any) {
       fail(`Hole punch failed: ${e.message}`)
-      disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid); process.exit(1)
+      cleanupAndFail()
     }
   } else {
     header('Step 6: Hole Punch'); inf('Skipped (--skip-punch)')
   }
 
   console.log('\n\x1b[32m✓ Ranked queue accept path confirmed.\x1b[0m\n')
-  try { wsSend(wsA, { type: 'matchEnd', userUID: BOT_A.uid }) } catch {}
-  try { wsSend(wsB, { type: 'matchEnd', userUID: BOT_B.uid }) } catch {}
-  setTimeout(() => { disconnectBot(wsA, BOT_A.uid); disconnectBot(wsB, BOT_B.uid) }, 300)
+  cleanup(true)
 }
 
 // ── Entry ─────────────────────────────────────────────────────────────────────
