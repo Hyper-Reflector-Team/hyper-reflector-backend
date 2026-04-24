@@ -77,7 +77,7 @@ export type SignalMessage =
     | { type: 'userDisconnect'; userUID?: string }
     | { type: 'sendMessage'; sender: SocketUser; message: string; messageId?: string }
     | { type: 'matchEnd'; userUID: string }
-    | { type: 'webrtc-ping-offer'; to: string; from: string; offer: unknown }
+    | { type: 'webrtc-ping-offer'; to: string; from: string; offer: unknown; lobbyId?: string }
     | { type: 'webrtc-ping-answer'; to: string; from: string; answer: unknown }
     | { type: 'webrtc-ping-decline'; to: string; from: string }
     | { type: 'webrtc-ping-candidate'; to: string; from: string; candidate: unknown }
