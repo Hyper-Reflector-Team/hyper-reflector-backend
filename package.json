@@ -15,7 +15,8 @@
     "test:webrtc-challenge": "npx ts-node src/tests/match-flow-test.ts --webrtc --target LcPLpfKXB0ON0UoIP9esWe73UJu2",
     "test:rank": "npx ts-node src/tests/match-flow-test.ts --rank --skip-punch",
     "test:rank:decline": "npx ts-node src/tests/match-flow-test.ts --rank-decline --skip-punch",
-    "test:rank:timeout": "npx ts-node src/tests/match-flow-test.ts --rank-timeout --skip-punch"
+    "test:rank:timeout": "npx ts-node src/tests/match-flow-test.ts --rank-timeout --skip-punch",
+    "test:ping-bot": "npx ts-node src/tests/match-flow-test.ts --ping-bot"
   },
   "author": "",
   "license": "ISC",
@@ -33,6 +34,7 @@
     "geolib": "^3.3.4",
     "gravatar.js": "^2.0.0",
     "uuid": "^11.1.0",
+    "node-datachannel": "^0.22.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

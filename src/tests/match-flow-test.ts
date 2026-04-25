@@ -53,6 +53,14 @@
  *   npm run test:signal                        ← signal server only, no other deps
  *   npm run test:punch                         ← signal + hole punch
  *   npm test -- <emulator-path>                ← bot-vs-bot with emulator
+ *   npm run test:ping-bot                      ← persistent ping responder (needs node-datachannel)
+ *
+ *   PING BOT MODE  (--ping-bot)
+ *     Joins the lobby as "Ping Server" and responds to peer-latency-offer signals
+ *     using real WebRTC DataChannels (via node-datachannel). The client's
+ *     peerLatencyManager will measure actual RTT to wherever this process is running.
+ *     Run it on the server → clients see true server ping. Run locally → near-zero.
+ *     Requires: npm install node-datachannel
  *
  * All options:
  *   --wait               Wait-for-challenge mode
@@ -75,6 +83,11 @@ import { spawn, ChildProcess } from 'child_process'
 
 const serverInfo = require('../../keys/server')
 
+// node-datachannel is only needed for --ping-bot mode; lazy-load so all other
+// modes work without it installed.
+let NodeDataChannel: any = null
+try { NodeDataChannel = require('node-datachannel') } catch {}
+
 const DEFAULTS = {
   signalUrl: `ws://${serverInfo.COTURN_IP}:${serverInfo.SIGNAL_PORT ?? 3004}`,
   punchHost: serverInfo.COTURN_IP ?? '127.0.0.1',
@@ -96,6 +109,7 @@ function parseArgs() {
     rankMode:     false,
     rankDecline:  false,
     rankTimeout:  false,
+    pingBotMode:  false,
     skipEmulator: false,
     skipPunch:    false,
   }
@@ -106,6 +120,7 @@ function parseArgs() {
       case '--rank':         cfg.rankMode     = true;           break
       case '--rank-decline': cfg.rankDecline  = true; cfg.rankMode = true; break
       case '--rank-timeout': cfg.rankTimeout  = true; cfg.rankMode = true; break
+      case '--ping-bot':    cfg.pingBotMode  = true;                      break
       case '--target':       cfg.targetUid    = argv[++i];      break
       case '--bot-name':   cfg.botName      = argv[++i];      break
       case '--game':       cfg.gameName     = argv[++i];      break
@@ -1009,11 +1024,198 @@ async function runRankQueueMode(cfg: ReturnType<typeof parseArgs>) {
   cleanup(true)
 }
 
+// ── PING BOT MODE ─────────────────────────────────────────────────────────────
+// Joins the lobby as a persistent "Ping Server" user and responds to
+// peer-latency-offer signals with real WebRTC DataChannels so clients measure
+// actual RTT. Run on the signal server host → clients see true server ping.
+
+async function runPingBotMode(cfg: ReturnType<typeof parseArgs>) {
+  if (!NodeDataChannel) {
+    fail('node-datachannel is not installed.')
+    inf('Run: npm install node-datachannel')
+    process.exit(1)
+  }
+
+  const { PeerConnection } = NodeDataChannel
+
+  const BOT_UID  = 'ping-bot-server'
+  const LOBBY_ID = 'Hyper Reflector'
+  const BOT = {
+    uid:            BOT_UID,
+    userName:       'Ping Server',
+    accountElo:     0,
+    countryCode:    'XX',
+    lobbyId:        LOBBY_ID,
+    lastKnownPings: [] as any[],
+    userEmail:      'ping-bot@hyper-reflector.internal',
+    isRankQueued:   false,
+  }
+
+  const ICE_SERVERS = [
+    'stun:stun.l.google.com:19302',
+    `stun:${serverInfo.COTURN_IP}:${serverInfo.COTURN_PORT ?? 3478}`,
+  ]
+
+  // measurementId → { pc, cleanupTimer }
+  type Session = { pc: any; cleanupTimer: ReturnType<typeof setTimeout> }
+  const sessions = new Map<string, Session>()
+  let totalCompleted = 0
+
+  function cleanupSession(measurementId: string) {
+    const s = sessions.get(measurementId)
+    if (!s) return
+    clearTimeout(s.cleanupTimer)
+    try { s.pc.close() } catch {}
+    sessions.delete(measurementId)
+  }
+
+  function handleOffer(ws: WebSocket, payload: any) {
+    const { measurementId, from, offer } = payload
+    if (!measurementId || !from || !offer?.sdp) return
+    if (sessions.has(measurementId)) return
+
+    log('offer', `← ${from.slice(0, 12)}… (${measurementId.slice(-6)}) [active: ${sessions.size + 1}]`)
+
+    const pc = new PeerConnection('ping-bot', { iceServers: ICE_SERVERS })
+
+    const cleanupTimer = setTimeout(() => {
+      log('timeout', `session ${measurementId.slice(-6)}`)
+      cleanupSession(measurementId)
+    }, 15_000)
+
+    sessions.set(measurementId, { pc, cleanupTimer })
+
+    pc.onLocalDescription((sdp: string, type: string) => {
+      wsSend(ws, {
+        type:          'peer-latency-answer',
+        to:            from,
+        from:          BOT_UID,
+        measurementId,
+        answer:        { type, sdp },
+      })
+      log('answer', `→ ${from.slice(0, 12)}…`)
+    })
+
+    pc.onLocalCandidate((candidate: string, mid: string) => {
+      wsSend(ws, {
+        type:          'peer-latency-candidate',
+        to:            from,
+        from:          BOT_UID,
+        measurementId,
+        candidate:     { candidate, sdpMid: mid, sdpMLineIndex: 0 },
+      })
+    })
+
+    pc.onDataChannel((channel: any) => {
+      log('channel', `open — echoing pings for ${from.slice(0, 12)}…`)
+      channel.onMessage((msg: string) => {
+        let parsed: any
+        try { parsed = JSON.parse(msg) } catch { return }
+
+        if (parsed?.type === 'latency-ping') {
+          channel.sendMessage(JSON.stringify({
+            type: 'latency-pong',
+            seq:  parsed.seq,
+            time: parsed.time,
+          }))
+        } else if (parsed?.type === 'latency-complete') {
+          totalCompleted++
+          ok(`ping complete  ${from.slice(0, 12)}… (${measurementId.slice(-6)})  total: ${totalCompleted}`)
+          cleanupSession(measurementId)
+        }
+      })
+    })
+
+    try {
+      pc.setRemoteDescription(offer.sdp, offer.type)
+    } catch (e: any) {
+      log('error', `setRemoteDescription: ${e.message}`)
+      cleanupSession(measurementId)
+    }
+  }
+
+  function handleCandidate(payload: any) {
+    const { measurementId, candidate } = payload
+    const s = sessions.get(measurementId)
+    if (!s || !candidate?.candidate) return
+    try {
+      s.pc.addRemoteCandidate(candidate.candidate, candidate.sdpMid ?? '0')
+    } catch {}
+  }
+
+  function connectBot() {
+    log('ws', `Connecting to ${cfg.signalUrl}…`)
+    const ws = new WebSocket(cfg.signalUrl)
+
+    ws.on('open', () => {
+      ok(`Connected — joining "${LOBBY_ID}" as "${BOT.userName}" (uid: ${BOT_UID})`)
+      wsSend(ws, { type: 'join', user: BOT, lobbyId: LOBBY_ID, pass: '' })
+    })
+
+    ws.on('message', (raw: WebSocket.RawData) => {
+      let payload: any
+      try { payload = JSON.parse(raw.toString()) } catch { return }
+      if (!payload?.type) return
+
+      switch (payload.type) {
+        case 'lobby-joined':
+          ok(`In lobby "${payload.lobbyId}" — waiting for latency offers`)
+          break
+        case 'connected-users': {
+          const count = Array.isArray(payload.users) ? payload.users.length : '?'
+          log('lobby', `${count} user(s)`)
+          break
+        }
+        case 'peer-latency-offer':
+          if (payload.to === BOT_UID) handleOffer(ws, payload)
+          break
+        case 'peer-latency-candidate':
+          if (payload.to === BOT_UID) handleCandidate(payload)
+          break
+        case 'peer-latency-decline':
+          if (payload.to === BOT_UID && payload.measurementId)
+            cleanupSession(payload.measurementId)
+          break
+      }
+    })
+
+    ws.on('close', (code: number) => {
+      log('ws', `Disconnected (${code}) — reconnecting in 5s…`)
+      for (const id of sessions.keys()) cleanupSession(id)
+      setTimeout(connectBot, 5_000)
+    })
+
+    ws.on('error', (e: Error) => log('ws', `Error: ${e.message}`))
+  }
+
+  console.log(`\n\x1b[1m=== Ping Bot Mode ===\x1b[0m`)
+  inf(`Signal server : ${cfg.signalUrl}`)
+  inf(`Bot UID       : ${BOT_UID}`)
+  inf(`ICE servers   : ${ICE_SERVERS.join(', ')}`)
+  inf(`Lobby         : ${LOBBY_ID}`)
+  inf(``)
+  inf(`Clients measuring ping to this process will see RTT to wherever it runs.`)
+  inf(`Run on the game server → clients see true server latency.`)
+  inf(`Press Ctrl+C to stop.\n`)
+
+  connectBot()
+
+  process.on('SIGINT', () => {
+    log('shutdown', `${totalCompleted} ping session(s) completed`)
+    for (const id of sessions.keys()) cleanupSession(id)
+    process.exit(0)
+  })
+
+  // Stay alive indefinitely
+  await new Promise(() => {})
+}
+
 // ── Entry ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const cfg = parseArgs()
-  if (cfg.waitMode)                         await runWaitMode(cfg)
+  if (cfg.pingBotMode)                      await runPingBotMode(cfg)
+  else if (cfg.waitMode)                    await runWaitMode(cfg)
   else if (cfg.webrtcMode && cfg.targetUid) await runWebrtcChallengeMode(cfg)
   else if (cfg.rankMode)                    await runRankQueueMode(cfg)
   else if (cfg.targetUid)                   await runChallengeMode(cfg)
