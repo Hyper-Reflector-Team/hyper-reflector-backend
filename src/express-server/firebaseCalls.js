@@ -388,9 +388,13 @@ async function getUserElo(uid) {
 }
 
 async function uploadMatchData(matchData, uid) {
+    console.log('test', JSON.stringify(matchData))
     if (!uid || !matchData.matchId) return
+      console.log('test2')
     if (!matchData.player1 || !matchData.player2) return
+      console.log('test3')
     if (matchData.player2 === 'unknown-opponent') return
+      console.log('test4')
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)
