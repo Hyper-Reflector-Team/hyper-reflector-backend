@@ -389,7 +389,8 @@ async function getUserElo(uid) {
 
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
-    if (uid === !matchData.player1) return
+    if (!matchData.player1 || !matchData.player2) return
+    if (matchData.player2 === 'unknown-opponent') return
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)
@@ -438,11 +439,19 @@ async function uploadMatchData(matchData, uid) {
 
     const sessionSnap = await sessionRef.get()
 
+    const luaP1Total = typeof parsed['p1-match-wins'] === 'number' ? parsed['p1-match-wins'] : null
+    const luaP2Total = typeof parsed['p2-match-wins'] === 'number' ? parsed['p2-match-wins'] : null
+    const hasLuaTotals = luaP1Total !== null && luaP2Total !== null
+
     if (!sessionSnap.exists) {
         console.log('snap shot did not exist')
-        // First match in session, create new document
-        const firstP1Wins = matchResult === '1' ? 1 : 0
-        const firstP2Wins = matchResult === '2' ? 1 : 0
+        if (hasLuaTotals) {
+            p1Wins = luaP1Total
+            p2Wins = luaP2Total
+        } else {
+            p1Wins = matchResult === '1' ? 1 : 0
+            p2Wins = matchResult === '2' ? 1 : 0
+        }
         const session = {
             sessionId: matchData.matchId,
             player1: matchData.player1,
@@ -450,27 +459,26 @@ async function uploadMatchData(matchData, uid) {
             player1Name: await getUserName(matchData.player1),
             player2Name: await getUserName(matchData.player2),
             matches: [matchEntry],
-            player1Wins: firstP1Wins,
-            player2Wins: firstP2Wins,
+            player1Wins: p1Wins,
+            player2Wins: p2Wins,
             timestamp: Date.now(),
         }
 
         await sessionRef.set(session)
-        p1Wins = firstP1Wins
-        p2Wins = firstP2Wins
     } else {
         console.log('snap shot did exist')
-        // Get current matches first (avoid fetching *after* the update)
-        const existingSession = sessionSnap.data()
-
-        const allMatches = [...(existingSession.matches || []), matchEntry]
-
-        for (const match of allMatches) {
-            if (match.result === '1') p1Wins++
-            if (match.result === '2') p2Wins++
+        if (hasLuaTotals) {
+            p1Wins = luaP1Total
+            p2Wins = luaP2Total
+        } else {
+            const existingSession = sessionSnap.data()
+            const allMatches = [...(existingSession.matches || []), matchEntry]
+            for (const match of allMatches) {
+                if (match.result === '1') p1Wins++
+                if (match.result === '2') p2Wins++
+            }
         }
 
-        // Single update
         await sessionRef.update({
             matches: FieldValue.arrayUnion(matchEntry),
             player1Wins: p1Wins,
@@ -873,16 +881,6 @@ async function getLeaderboard(sortBy = 'elo', limit = 25, cursorValue = null) {
     }
 }
 
-async function getUserName(uid) {
-    if (!uid) return
-    const querySnapshot = await usersRef.where('uid', '==', uid).get()
-    if (!querySnapshot.empty) {
-        console.log('trying to get docs', querySnapshot.docs)
-        return querySnapshot.docs[0].data().userName
-    } else {
-        return null
-    }
-}
 
 // set elo
 async function setUserElo(uid, newElo) {
