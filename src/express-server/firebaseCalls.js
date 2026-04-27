@@ -388,17 +388,14 @@ async function getUserElo(uid) {
 }
 
 async function uploadMatchData(matchData, uid) {
-    console.log('test', JSON.stringify(matchData))
     if (!uid || !matchData.matchId) return
-      console.log('test2')
     if (!matchData.player1 || !matchData.player2) return
-      console.log('test3')
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)
     const p1Char = dataConverter.getCharacterByCode(parsed['player1-char'])
     const p2Char = dataConverter.getCharacterByCode(parsed['player2-char'])
-    const matchResult = parsed['p1-win'] ? '1' : '2'
+    const matchResult = parsed['p2-win'] ? '1' : '2'
     const parsedMatchUuid = parsed['match-uuid'] || parsed['matchUuid']
     const matchUuid =
         (typeof parsedMatchUuid === 'string' && parsedMatchUuid.length > 0
@@ -441,8 +438,8 @@ async function uploadMatchData(matchData, uid) {
 
     const sessionSnap = await sessionRef.get()
 
-    const luaP1Total = typeof parsed['p1-match-wins'] === 'number' ? parsed['p1-match-wins'] : null
-    const luaP2Total = typeof parsed['p2-match-wins'] === 'number' ? parsed['p2-match-wins'] : null
+    const luaP1Total = typeof parsed['p2-match-wins'] === 'number' ? parsed['p2-match-wins'] : null
+    const luaP2Total = typeof parsed['p1-match-wins'] === 'number' ? parsed['p1-match-wins'] : null
     const hasLuaTotals = luaP1Total !== null && luaP2Total !== null
 
     if (!sessionSnap.exists) {
