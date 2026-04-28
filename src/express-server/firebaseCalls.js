@@ -516,7 +516,6 @@ async function uploadMatchData(matchData, uid) {
     await setUserElo(matchData.player1, newP1Elo)
     await setUserElo(matchData.player2, newP2Elo)
 
-    console.log('[recent-matches] p1Wins:', p1Wins, 'p2Wins:', p2Wins, 'matchResult:', matchResult, 'hasLuaTotals:', hasLuaTotals, 'luaP1Total:', luaP1Total, 'luaP2Total:', luaP2Total)
     const batch = db.batch()
     for (const player of [matchData.player1, matchData.player2]) {
         if (!player) continue
