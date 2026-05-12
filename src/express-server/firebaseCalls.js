@@ -36,6 +36,7 @@ const allowedFields = [
         'assignedFlairs',
         'rpsElo',
         'sidePreferences',
+        'createdAt',
     ]
     const sanitized = {}
     allowedFields.forEach((field) => {
@@ -253,12 +254,22 @@ async function createAccount({ name, email }, token) {
     if (!token) return
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (querySnapshot.empty) {
-        // create a new user
         await usersRef.doc(email).set({
             userEmail: email,
             userName: name,
+            userNameLower: name.toLowerCase(),
             userProfilePic: null,
             uid: token,
+            accountElo: 1200,
+            createdAt: Date.now(),
+        })
+        await db.collection('player-stats').doc(token).set({
+            totalWins: 0,
+            totalLosses: 0,
+            totalGames: 0,
+            accountElo: 1200,
+            winStreak: 0,
+            longestWinStreak: 0,
         })
     } else {
         return null
@@ -329,6 +340,7 @@ async function updateUserData(data, token) {
     if (updates.userName) {
         await userDocRef.update({
             knownAliases: FieldValue.arrayUnion(updates.userName),
+            userNameLower: updates.userName.toLowerCase(),
         })
     }
 
@@ -529,10 +541,16 @@ async function uploadMatchData(matchData, uid) {
             {
                 player1Name: await getUserName(matchData.player1),
                 player2Name: await getUserName(matchData.player2),
+                player1Uid: matchData.player1 || null,
+                player2Uid: matchData.player2 || null,
                 sessionId: matchData.matchId,
                 timestamp: Date.now(),
                 p1Wins,
                 p2Wins,
+                player1Char: p1Char || null,
+                player2Char: p2Char || null,
+                player1Super: parsed['player1-super'] ?? null,
+                player2Super: parsed['player2-super'] ?? null,
             },
             { merge: true }
         )
@@ -798,15 +816,15 @@ async function isAdminUser(uid) {
 }
 
 async function searchUsers(query = '', limit = 25, cursorName = null) {
-    const normalizedQuery = (query || '').trim()
+    const normalizedQuery = (query || '').trim().toLowerCase()
     const pageSize = Math.min(Number(limit) || 25, 50)
-    let ref = usersRef.orderBy('userName')
+    let ref = usersRef.orderBy('userNameLower')
     if (normalizedQuery) {
         const end = `${normalizedQuery}\uf8ff`
-        ref = ref.where('userName', '>=', normalizedQuery).where('userName', '<=', end)
+        ref = ref.where('userNameLower', '>=', normalizedQuery).where('userNameLower', '<=', end)
     }
     if (cursorName) {
-        ref = ref.startAfter(cursorName)
+        ref = ref.startAfter(cursorName.toLowerCase())
     }
     const snapshot = await ref.limit(pageSize).get()
     if (snapshot.empty) {
@@ -816,67 +834,66 @@ async function searchUsers(query = '', limit = 25, cursorName = null) {
     const lastDoc = snapshot.docs[snapshot.docs.length - 1]
     return {
         users,
-        nextCursor: lastDoc ? lastDoc.get('userName') : null,
+        nextCursor: lastDoc ? lastDoc.get('userNameLower') : null,
     }
 }
 
 async function getLeaderboard(sortBy = 'elo', limit = 25, cursorValue = null) {
     const pageSize = Math.min(Number(limit) || 25, 50)
+    const offset = cursorValue !== null && cursorValue !== undefined ? Number(cursorValue) : 0
+
     if (sortBy === 'wins') {
-        let statsRef = db.collection('player-stats').orderBy('totalWins', 'desc')
-        if (cursorValue !== undefined && cursorValue !== null) {
-            statsRef = statsRef.startAfter(Number(cursorValue))
+        const [statsSnapshot, usersSnapshot] = await Promise.all([
+            db.collection('player-stats').get(),
+            usersRef.get(),
+        ])
+
+        const statsMap = new Map()
+        for (const doc of statsSnapshot.docs) {
+            statsMap.set(doc.id, doc.data())
         }
-        const snapshot = await statsRef.limit(pageSize).get()
-        if (snapshot.empty) {
-            return { entries: [], nextCursor: null }
+
+        const allEntries = []
+        for (const doc of usersSnapshot.docs) {
+            const user = sanitizeUserRecord(doc.data())
+            if (!user) continue
+            const stats = statsMap.get(user.uid) || {}
+            allEntries.push({
+                user,
+                stats: {
+                    totalWins: stats.totalWins || 0,
+                    totalLosses: stats.totalLosses || 0,
+                    totalGames: stats.totalGames || 0,
+                },
+                _sort: stats.totalWins || 0,
+            })
         }
-        const entries = []
-        for (const doc of snapshot.docs) {
-            const stats = doc.data() || {}
-            const user = await getUserData(doc.id)
-            if (user) {
-                entries.push({
-                    user,
-                    stats: {
-                        totalWins: stats.totalWins || 0,
-                        totalLosses: stats.totalLosses || 0,
-                        totalGames: stats.totalGames || 0,
-                    },
-                })
-            }
-        }
-        const lastDoc = snapshot.docs[snapshot.docs.length - 1]
+
+        allEntries.sort((a, b) => b._sort - a._sort)
+        const page = allEntries.slice(offset, offset + pageSize)
         return {
-            entries,
-            nextCursor: lastDoc ? lastDoc.get('totalWins') : null,
+            entries: page.map(({ user, stats }) => ({ user, stats })),
+            nextCursor: offset + pageSize < allEntries.length ? offset + pageSize : null,
         }
     }
 
-    let userRef = usersRef.orderBy('accountElo', 'desc')
-    if (cursorValue !== undefined && cursorValue !== null) {
-        userRef = userRef.startAfter(Number(cursorValue))
-    }
-    const snapshot = await userRef.limit(pageSize).get()
-    if (snapshot.empty) {
-        return { entries: [], nextCursor: null }
-    }
-    const entries = snapshot.docs
-        .map((doc) => {
-            const user = sanitizeUserRecord(doc.data())
-            if (!user) return null
-            return {
-                user,
-                stats: {
-                    accountElo: doc.get('accountElo') || 0,
-                },
-            }
+    const usersSnapshot = await usersRef.get()
+    const allEntries = []
+    for (const doc of usersSnapshot.docs) {
+        const user = sanitizeUserRecord(doc.data())
+        if (!user) continue
+        allEntries.push({
+            user,
+            stats: { accountElo: doc.get('accountElo') ?? 1200 },
+            _sort: doc.get('accountElo') ?? 1200,
         })
-        .filter(Boolean)
-    const lastDoc = snapshot.docs[snapshot.docs.length - 1]
+    }
+
+    allEntries.sort((a, b) => b._sort - a._sort)
+    const page = allEntries.slice(offset, offset + pageSize)
     return {
-        entries,
-        nextCursor: lastDoc ? lastDoc.get('accountElo') : null,
+        entries: page.map(({ user, stats }) => ({ user, stats })),
+        nextCursor: offset + pageSize < allEntries.length ? offset + pageSize : null,
     }
 }
 
@@ -925,6 +942,7 @@ async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId 
 
     const querySnapshot = await query.get()
     const matches = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+
     return {
         matches,
         lastVisible: querySnapshot.docs[querySnapshot.docs.length - 1] || null,
