@@ -9,6 +9,11 @@ const serverInfo = require('../../keys/server.ts')
 // firebase related commands
 const db = getFirestore()
 
+// UIDs allowed to upload matches against mock/unknown opponents (dev/testing only)
+const MOCK_UPLOAD_WHITELIST = new Set([
+    'LcPLpfKXB0ON0UoIP9esWe73UJu2', // DEV
+])
+
 const usersRef = db.collection('users')
 const logInUserRef = db.collection('logged-in')
 const winStreaksRef = db.collection('user-win-streaks')
@@ -399,9 +404,17 @@ async function getUserElo(uid) {
     }
 }
 
+function isMockOrUnknownOpponent(opponentUid) {
+    if (!opponentUid) return true
+    return opponentUid.startsWith('mock-') || opponentUid === 'unknown-opponent'
+}
+
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
     if (!matchData.player1 || !matchData.player2) return
+
+    const opponentUid = uid === matchData.player1 ? matchData.player2 : matchData.player1
+    if (isMockOrUnknownOpponent(opponentUid) && !MOCK_UPLOAD_WHITELIST.has(uid)) return
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)
@@ -547,10 +560,8 @@ async function uploadMatchData(matchData, uid) {
                 timestamp: Date.now(),
                 p1Wins,
                 p2Wins,
-                player1Char: p1Char || null,
-                player2Char: p2Char || null,
-                player1Super: parsed['player1-super'] ?? null,
-                player2Super: parsed['player2-super'] ?? null,
+                player1Chars: FieldValue.arrayUnion({ char: p1Char || null, super: parsed['player1-super'] ?? null }),
+                player2Chars: FieldValue.arrayUnion({ char: p2Char || null, super: parsed['player2-super'] ?? null }),
             },
             { merge: true }
         )
