@@ -3,7 +3,7 @@ import dgram from 'dgram';
 import { randomUUID } from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches } from './state';
+import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches, userSubscriptions, rankQueue, tournamentSubscriptions } from './state';
 import { ConnectedUser, MessageContext, SignalMessage, SocketUser } from './types';
 import {
     broadcastKillPeer,
@@ -14,6 +14,8 @@ import {
     disconnectUserFromUsers,
     ensureLobby,
     removeUserFromAllLobbies,
+    removeUserFromLobby,
+    subscribeUserToLobby,
     syncUserToLobby,
 } from './services/lobby';
 import { DEFAULT_LOBBY_ID } from './config';
@@ -46,6 +48,42 @@ const miniGameSessions = new Map<string, MiniGameSession>();
 const miniGamePairIndex = new Map<string, string>();
 const rpsChallengeCooldowns = new Map<string, number>();
 
+type PendingRankMatch = {
+    matchId: string;
+    uidA: string;
+    uidB: string;
+    gameName: string;
+    accepted: Set<string>;
+    timeout: NodeJS.Timeout;
+};
+const pendingRankMatches = new Map<string, PendingRankMatch>();
+
+const ACTIVE_MATCH_TTL_MS = 4 * 60 * 60_000;
+setInterval(() => {
+    const now = Date.now();
+    for (const [matchId, match] of activeMatches.entries()) {
+        if (now - match.startedAt > ACTIVE_MATCH_TTL_MS) {
+            activeMatches.delete(matchId);
+            match.players.forEach(p => {
+                const user = connectedUsers.get(p.uid);
+                if (user) connectedUsers.set(p.uid, { ...user, currentMatchId: undefined });
+            });
+        }
+    }
+}, 60_000).unref();
+
+function broadcastUserListForUser(uid: string) {
+    const lobbiesToBroadcast = new Set<string>();
+    for (const [lobbyId, lobby] of lobbies.entries()) {
+        if (lobby.has(uid)) lobbiesToBroadcast.add(lobbyId);
+    }
+    if (lobbiesToBroadcast.size === 0) {
+        broadcastUserList(userLobby.get(uid) ?? DEFAULT_LOBBY_ID);
+        return;
+    }
+    for (const lobbyId of lobbiesToBroadcast) broadcastUserList(lobbyId);
+}
+
 const getPairKey = (a: string, b: string) => [a, b].sort().join('::');
 const getDirectionalKey = (challengerId: string, opponentId: string) => `${challengerId}->${opponentId}`;
 
@@ -62,6 +100,38 @@ function sendToUser(uid: string, payload: unknown) {
     const target = connectedUsers.get(uid);
     if (!target?.ws || target.ws.readyState !== WebSocket.OPEN) return;
     target.ws.send(JSON.stringify(payload));
+}
+
+// Tournament viewer relay — pure pub/sub, no tournament data touches this file.
+// Actual tournament state lives in Firestore, written only via the Express
+// /tournament/* routes; this just tells other viewers of the same tournament
+// to go refetch it.
+function handleTournamentSubscribe(message: Extract<SignalMessage, { type: 'tournament-subscribe' }>) {
+    if (!message.tournamentId || !message.uid) return;
+    let subs = tournamentSubscriptions.get(message.tournamentId);
+    if (!subs) {
+        subs = new Set<string>();
+        tournamentSubscriptions.set(message.tournamentId, subs);
+    }
+    subs.add(message.uid);
+}
+
+function handleTournamentUnsubscribe(message: Extract<SignalMessage, { type: 'tournament-unsubscribe' }>) {
+    if (!message.tournamentId || !message.uid) return;
+    const subs = tournamentSubscriptions.get(message.tournamentId);
+    if (!subs) return;
+    subs.delete(message.uid);
+    if (subs.size === 0) tournamentSubscriptions.delete(message.tournamentId);
+}
+
+function handleTournamentChanged(message: Extract<SignalMessage, { type: 'tournament-changed' }>) {
+    if (!message.tournamentId || !message.uid) return;
+    const subs = tournamentSubscriptions.get(message.tournamentId);
+    if (!subs) return;
+    for (const uid of subs) {
+        if (uid === message.uid) continue; // the sender already has the fresh state locally
+        sendToUser(uid, { type: 'tournament-changed', tournamentId: message.tournamentId });
+    }
 }
 
 type SerializedMatch = {
@@ -150,7 +220,10 @@ function notifyHolePunchKill(uid: string, peerUid?: string) {
 export async function handleMessage(ctx: MessageContext, message: SignalMessage) {
     switch (message.type) {
         case 'join':
-            await handleJoin(ctx, message.user, message.lobbyId);
+            await handleJoin(ctx, message.user, message.lobbyId, message.pass);
+            break;
+        case 'updateProfile':
+            handleUpdateProfile(ctx, message.user);
             break;
         case 'updateSocketState':
             await handleUpdateSocketState(ctx, message.data);
@@ -164,10 +237,24 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'request-match':
             await handleRequestMatch(ctx, message);
             break;
-        case 'userDisconnect':
-            broadcastKillPeer(message.userUID ?? ctx.ws.uid, ctx.wss);
-            forceCloseMatchForUser(message.userUID ?? ctx.ws.uid, ctx.wss, 'user-disconnected');
+        case 'userDisconnect': {
+            const disconnectedUid = message.userUID ?? ctx.ws.uid;
+            rankQueue.delete(disconnectedUid ?? '');
+            for (const [matchId, pending] of pendingRankMatches.entries()) {
+                if (pending.uidA === disconnectedUid || pending.uidB === disconnectedUid) {
+                    clearTimeout(pending.timeout);
+                    pendingRankMatches.delete(matchId);
+                    const otherUid = pending.uidA === disconnectedUid ? pending.uidB : pending.uidA;
+                    sendToUser(otherUid, { type: 'rank-queue-cancelled', matchId, reason: 'opponent-disconnected' });
+                }
+            }
+            broadcastKillPeer(disconnectedUid, ctx.wss);
+            forceCloseMatchForUser(disconnectedUid, ctx.wss, 'user-disconnected');
+            for (const subs of tournamentSubscriptions.values()) {
+                subs.delete(disconnectedUid ?? '');
+            }
             break;
+        }
         case 'sendMessage':
             await handleSendMessage(message.sender, message.message, message.messageId);
             break;
@@ -179,13 +266,13 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'webrtc-ping-answer':
         case 'webrtc-ping-decline':
         case 'webrtc-ping-candidate':
-            forwardWebRtc(message);
+            forwardWebRtc(ctx, message);
             break;
         case 'peer-latency-offer':
         case 'peer-latency-answer':
         case 'peer-latency-decline':
         case 'peer-latency-candidate':
-            forwardWebRtc(message);
+            forwardWebRtc(ctx, message);
             break;
         case 'estimate-ping-users':
             await handleEstimatePing(ctx, message.data);
@@ -208,29 +295,66 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'match-status':
             await handleMatchStatus(ctx, message);
             break;
+        case 'subscribeLobby':
+            await handleSubscribeLobby(ctx, message);
+            break;
+        case 'unsubscribeLobby':
+            handleUnsubscribeLobby(ctx, message);
+            break;
+        case 'updateLobbyGame':
+            handleUpdateLobbyGame(ctx, message);
+            break;
+        case 'rank-queue-accept':
+            handleRankQueueAccept(ctx, message);
+            break;
+        case 'rank-queue-decline':
+            handleRankQueueDecline(ctx, message);
+            break;
+        case 'tournament-subscribe':
+            handleTournamentSubscribe(message);
+            break;
+        case 'tournament-unsubscribe':
+            handleTournamentUnsubscribe(message);
+            break;
+        case 'tournament-changed':
+            handleTournamentChanged(message);
+            break;
         default:
             ctx.logger.warn('Unhandled message type', message);
     }
 }
 
-async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends never ? never : any, preferredLobbyId?: string) {
+async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends never ? never : any, preferredLobbyId?: string, pass?: string) {
     ctx.ws.uid = user.uid;
     ctx.ws.isAlive = true;
 
     const now = Date.now();
     const existing = connectedUsers.get(user.uid);
+
+    // If this UID was in the ranked queue from a previous session, remove it so
+    // the reconnecting client starts fresh and doesn't get matched silently.
+    if (existing && rankQueue.has(user.uid)) {
+        rankQueue.delete(user.uid);
+    }
+
     const connectedUser: ConnectedUser = {
         ...existing,
         ...user,
         ws: ctx.ws,
         joinedAt: existing?.joinedAt ?? now,
         lastHeartbeat: now,
+        isRankQueued: false,
     };
 
     connectedUsers.set(user.uid, connectedUser);
 
     const lobbyId = preferredLobbyId ?? user.lobbyId ?? DEFAULT_LOBBY_ID;
     ensureLobby(lobbyId);
+
+    if (pass && !lobbyMeta.has(lobbyId)) {
+        lobbyMeta.set(lobbyId, { pass, isPrivate: true, ownerUid: user.uid, gameName: undefined });
+    }
+
     syncUserToLobby(user.uid, lobbyId);
     broadcastUserList(lobbyId);
     broadcastLobbyCounts(ctx.wss);
@@ -246,14 +370,62 @@ async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends
     void populateGeoForUser(ctx, connectedUser);
 }
 
+function handleUpdateProfile(ctx: MessageContext, user: SocketUser) {
+    if (!user?.uid) return;
+    if (!ctx.ws.uid || user.uid !== ctx.ws.uid) return;
+    const existing = connectedUsers.get(user.uid);
+    if (!existing) return;
+
+    const updatedUser: ConnectedUser = {
+        ...existing,
+        ...user,
+        ws: existing.ws,
+        joinedAt: existing.joinedAt,
+        lastHeartbeat: existing.lastHeartbeat,
+    };
+
+    connectedUsers.set(user.uid, updatedUser);
+
+    for (const [lobbyId, lobby] of lobbies.entries()) {
+        if (lobby.has(user.uid)) lobby.set(user.uid, { ...updatedUser });
+    }
+
+    broadcastUserListForUser(user.uid);
+}
+
 async function handleUpdateSocketState(
     ctx: MessageContext,
     data: Extract<SignalMessage, { type: 'updateSocketState' }>['data']
 ) {
+    if (!ctx.ws.uid || data.uid !== ctx.ws.uid) {
+        ctx.logger.warn(`Rejected updateSocketState for UID ${data.uid}: does not match authenticated socket`);
+        return;
+    }
+
     const userToUpdate = connectedUsers.get(data.uid);
     if (!userToUpdate) {
         ctx.logger.warn(`No user found for UID ${data.uid}`);
         return;
+    }
+
+    // Handle rank queue toggle
+    if (data.stateToUpdate.key === 'isRankQueued') {
+        const isQueue = data.stateToUpdate.value === true;
+        if (isQueue && userToUpdate.currentMatchId) return;
+        if (isQueue) {
+            rankQueue.set(data.uid, {
+                uid: data.uid,
+                elo: typeof userToUpdate.accountElo === 'number' ? userToUpdate.accountElo : 1200,
+                countryCode: userToUpdate.countryCode ?? '',
+                lastKnownPings: Array.isArray(userToUpdate.lastKnownPings) ? userToUpdate.lastKnownPings : [],
+                lobbyId: data.lobbyId ?? userLobby.get(data.uid) ?? DEFAULT_LOBBY_ID,
+                queuedAt: Date.now(),
+                gameName: data.rankQueueGameName ?? 'sfiii3nr1',
+            });
+            tryRankMatch(ctx.wss);
+        } else {
+            rankQueue.delete(data.uid);
+        }
     }
 
     let updatedUserProps: Record<string, unknown>;
@@ -283,8 +455,19 @@ async function handleUpdateSocketState(
     };
 
     connectedUsers.set(data.uid, updatedUser);
+
+    const primaryLobby = userLobby.get(data.uid);
+    const allSubs = userSubscriptions.get(data.uid);
+    const lobbiesToSync = new Set<string>([...(allSubs ?? [])]);
+    if (primaryLobby) lobbiesToSync.add(primaryLobby);
+
+    for (const lobbyId of lobbiesToSync) {
+        const lobby = lobbies.get(lobbyId);
+        if (lobby?.has(data.uid)) lobby.set(data.uid, { ...updatedUser });
+    }
+
     syncUserToLobby(data.uid, data.lobbyId);
-    broadcastUserList(data.lobbyId);
+    broadcastUserListForUser(data.uid);
 
     try {
         await axios.post(
@@ -309,31 +492,32 @@ async function handleCreateLobby(
     ctx: MessageContext,
     message: Extract<SignalMessage, { type: 'createLobby' }>
 ) {
-    const { lobbyId, pass, user, isPrivate } = message;
+    const { lobbyId, pass, user, isPrivate, gameName } = message;
 
     if (lobbies.has(lobbyId)) {
         ctx.ws.send(JSON.stringify({ type: 'error', message: 'Lobby already exists' }));
         return;
     }
 
-    removeUserFromAllLobbies(user.uid, ctx.wss);
     cancelLobbyTimeout(lobbyId);
 
-    const lobby = ensureLobby(lobbyId);
-    const connectedUser = connectedUsers.get(user.uid) ?? {
-        ...user,
-        ws: ctx.ws,
-        joinedAt: Date.now(),
-        lastHeartbeat: Date.now(),
-    };
+    // Ensure the user record is up-to-date before subscribing
+    const existing = connectedUsers.get(user.uid);
+    if (existing) {
+        connectedUsers.set(user.uid, { ...existing, ws: ctx.ws });
+    } else {
+        const fresh = { ...user, ws: ctx.ws, joinedAt: Date.now(), lastHeartbeat: Date.now() } as ConnectedUser;
+        connectedUsers.set(user.uid, fresh);
+    }
 
-    connectedUsers.set(user.uid, { ...connectedUser, ws: ctx.ws });
-    lobby.set(user.uid, { ...connectedUser, ws: ctx.ws });
-    lobbyMeta.set(lobbyId, { pass, isPrivate, ownerUid: user.uid });
-    userLobby.set(user.uid, lobbyId);
+    lobbyMeta.set(lobbyId, { pass, isPrivate: !!pass, ownerUid: user.uid, gameName: gameName || undefined });
+
+    // Add as a new subscription — don't remove from existing lobbies
+    subscribeUserToLobby(user.uid, lobbyId);
 
     broadcastUserList(lobbyId);
-    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId }));
+    // isSubscription: true so the client adds a tab rather than replacing all
+    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId, isSubscription: true }));
     broadcastLobbyCounts(ctx.wss);
 }
 
@@ -345,7 +529,7 @@ async function handleChangeLobby(
     if (!user) return;
 
     const meta = lobbyMeta.get(newLobbyId);
-    if (meta && meta.pass !== pass) {
+    if (meta?.pass && meta.pass !== (pass ?? '')) {
         ctx.ws.send(JSON.stringify({ type: 'error', message: 'Invalid password for lobby' }));
         return;
     }
@@ -380,6 +564,9 @@ async function handleChangeLobby(
 
     broadcastUserList(newLobbyId);
     broadcastLobbyCounts(ctx.wss);
+
+    // Confirm the lobby change so the client can update its active lobby state
+    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId: newLobbyId, isSubscription: false }));
 }
 
 async function handleRequestMatch(
@@ -410,6 +597,12 @@ async function handleRequestMatch(
 
     const resolvedChallenger = connectedUsers.get(challengerId);
     const resolvedOpponent = connectedUsers.get(opponentId);
+
+    // Dedup: bail if a match between this pair is already active
+    const alreadyMatched = [...activeMatches.values()].some(
+        m => m.players.some(p => p.uid === challengerId) && m.players.some(p => p.uid === opponentId)
+    );
+    if (alreadyMatched) return;
 
     if (!resolvedChallenger || !resolvedOpponent) {
         if (ctx.ws.readyState === WebSocket.OPEN) {
@@ -477,7 +670,8 @@ async function handleRequestMatch(
     connectedUsers.set(challengerId, { ...resolvedChallenger, currentMatchId: matchId });
     connectedUsers.set(opponentId, { ...resolvedOpponent, currentMatchId: matchId });
 
-    broadcastUserList(resolvedLobbyId);
+    broadcastUserListForUser(challengerId);
+    broadcastUserListForUser(opponentId);
     broadcastMatchListSnapshot(ctx.wss);
 }
 
@@ -489,17 +683,29 @@ async function handleSendMessage(sender: SocketUser | undefined, message: string
     const connectedSender = connectedUsers.get(sender.uid);
     if (!connectedSender) return;
 
-    const lobbyId =
-        userLobby.get(connectedSender.uid) ??
-        connectedSender.lobbyId ??
-        DEFAULT_LOBBY_ID;
     const trimmedMessage = message.trim();
     if (!trimmedMessage.length) return;
 
-    broadcastUserMessage(lobbyId, trimmedMessage, connectedSender, messageId);
+    // Prefer the lobby the client says they are actively viewing.
+    // Validate that the sender is actually subscribed to it before trusting it.
+    const requestedLobbyId = typeof sender.lobbyId === 'string' ? sender.lobbyId.trim() : '';
+    const senderSubs = userSubscriptions.get(connectedSender.uid);
+    const lobbyId =
+        requestedLobbyId &&
+        (
+            senderSubs?.has(requestedLobbyId) ||
+            userLobby.get(connectedSender.uid) === requestedLobbyId ||
+            lobbies.get(requestedLobbyId)?.has(connectedSender.uid)
+        )
+            ? requestedLobbyId
+            : userLobby.get(connectedSender.uid) ?? connectedSender.lobbyId ?? DEFAULT_LOBBY_ID;
+
+    // Stamp the resolved lobbyId onto the sender so the broadcast carries it
+    const senderWithLobby: ConnectedUser = { ...connectedSender, lobbyId };
+    broadcastUserMessage(lobbyId, trimmedMessage, senderWithLobby, messageId);
 }
 
-function forwardWebRtc(message: Extract<
+function forwardWebRtc(ctx: MessageContext, message: Extract<
     SignalMessage,
     {
         type:
@@ -514,6 +720,14 @@ function forwardWebRtc(message: Extract<
     }
 >) {
     if (message.to === message.from) return;
+
+    // The client claims to be `from` — refuse to relay unless that matches the
+    // uid this socket actually joined as, so one client can't impersonate another
+    // in challenge/ping signaling.
+    if (!ctx.ws.uid || message.from !== ctx.ws.uid) {
+        ctx.logger.warn(`Rejected forged ${message.type}: socket uid "${ctx.ws.uid}" claimed from "${message.from}"`);
+        return;
+    }
 
     const targetUser = connectedUsers.get(message.to);
     if (!targetUser) return;
@@ -840,7 +1054,6 @@ export function forceCloseMatchForUser(
     const match = activeMatches.get(matchId);
     activeMatches.delete(matchId);
 
-    const lobbyId = match?.lobbyId ?? userLobby.get(uid) ?? DEFAULT_LOBBY_ID;
     const participants = match?.players ?? [{ uid, playerSlot: 0 as 0 | 1 }];
 
     participants.forEach((player) => {
@@ -864,11 +1077,243 @@ export function forceCloseMatchForUser(
         participants.forEach((player) => {
             const opponent = participants.find((target) => target.uid !== player.uid);
             if (opponent) {
-        notifyHolePunchKill(player.uid, opponent.uid);
+                notifyHolePunchKill(player.uid, opponent.uid);
             }
         });
     }
 
+    participants.forEach((player) => broadcastUserListForUser(player.uid));
+    broadcastMatchListSnapshot(wss);
+}
+
+// ── subscribeLobby / unsubscribeLobby ─────────────────────────────────────────
+
+const MAX_LOBBY_SUBSCRIPTIONS = 5;
+
+async function handleSubscribeLobby(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'subscribeLobby' }>
+) {
+    const { lobbyId, pass, user } = message;
+    if (!lobbyId?.trim() || !user?.uid) return;
+
+    const subs = userSubscriptions.get(user.uid) ?? new Set<string>();
+    if (subs.size >= MAX_LOBBY_SUBSCRIPTIONS) {
+        ctx.ws.send(JSON.stringify({ type: 'error', message: `Max ${MAX_LOBBY_SUBSCRIPTIONS} lobbies allowed` }));
+        return;
+    }
+
+    const meta = lobbyMeta.get(lobbyId);
+    if (meta?.pass && meta.pass !== (pass ?? '')) {
+        ctx.ws.send(JSON.stringify({ type: 'error', message: 'Invalid password for lobby' }));
+        return;
+    }
+
+    if (pass && !meta) {
+        lobbyMeta.set(lobbyId, { pass, isPrivate: true, ownerUid: user.uid, gameName: undefined });
+    }
+
+    cancelLobbyTimeout(lobbyId);
+    subscribeUserToLobby(user.uid, lobbyId);
     broadcastUserList(lobbyId);
+    broadcastLobbyCounts(ctx.wss);
+
+    ctx.ws.send(JSON.stringify({ type: 'lobby-joined', lobbyId, isSubscription: true }));
+}
+
+function handleUnsubscribeLobby(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'unsubscribeLobby' }>
+) {
+    const uid = ctx.ws.uid;
+    if (!uid || !message.lobbyId?.trim()) return;
+    removeUserFromLobby(uid, message.lobbyId.trim(), ctx.wss);
+    broadcastLobbyCounts(ctx.wss);
+}
+
+function handleUpdateLobbyGame(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'updateLobbyGame' }>
+) {
+    const { lobbyId, gameName } = message;
+    if (!lobbyId?.trim()) return;
+    const meta = lobbyMeta.get(lobbyId.trim());
+    if (!meta) return;
+    lobbyMeta.set(lobbyId.trim(), { ...meta, gameName: gameName || undefined });
+    broadcastLobbyCounts(ctx.wss);
+}
+
+// ── Ranked queue matching ─────────────────────────────────────────────────────
+
+function tryRankMatch(_wss: WebSocketServer) {
+    const entries = [...rankQueue.values()].filter(e => connectedUsers.has(e.uid));
+    if (entries.length < 2) return;
+
+    let bestA: string | null = null;
+    let bestB: string | null = null;
+    let bestScore = Infinity;
+
+    for (let i = 0; i < entries.length; i++) {
+        for (let j = i + 1; j < entries.length; j++) {
+            const a = entries[i];
+            const b = entries[j];
+
+            if (a.gameName !== b.gameName) continue;
+
+            const eloDiff = Math.abs(a.elo - b.elo);
+            const sameCountry = a.countryCode && b.countryCode && a.countryCode === b.countryCode;
+
+            const pingEntry =
+                a.lastKnownPings.find(p => p.id === b.uid) ??
+                b.lastKnownPings.find(p => p.id === a.uid);
+            const rawPing = pingEntry?.ping ?? 999;
+            const pingMs = typeof rawPing === 'string' ? parseFloat(rawPing) : rawPing;
+
+            const score = eloDiff + (sameCountry ? 0 : 300) + (Number.isFinite(pingMs) ? pingMs : 999);
+
+            if (score < bestScore) {
+                bestScore = score;
+                bestA = a.uid;
+                bestB = b.uid;
+            }
+        }
+    }
+
+    if (!bestA || !bestB) return;
+
+    const matchedGameName = entries.find(e => e.uid === bestA)?.gameName ?? 'sfiii3nr1';
+
+    rankQueue.delete(bestA);
+    rankQueue.delete(bestB);
+
+    const userA = connectedUsers.get(bestA);
+    const userB = connectedUsers.get(bestB);
+    if (!userA || !userB) return;
+
+    // Clear isRankQueued so the searching indicator disappears
+    connectedUsers.set(bestA, { ...userA, isRankQueued: false } as ConnectedUser);
+    connectedUsers.set(bestB, { ...userB, isRankQueued: false } as ConnectedUser);
+
+    // Compute ping between the two players
+    const pingEntry =
+        userA.lastKnownPings?.find(p => p.id === bestB) ??
+        userB.lastKnownPings?.find(p => p.id === bestA);
+    const rawPing = pingEntry?.ping ?? null;
+    const pingMs = rawPing !== null
+        ? (typeof rawPing === 'string' ? parseFloat(rawPing) : rawPing)
+        : null;
+
+    const matchId = randomUUID();
+
+    const playerInfoA = {
+        uid: bestA,
+        userName: userA.userName ?? 'Unknown',
+        countryCode: userA.countryCode ?? '',
+        accountElo: typeof userA.accountElo === 'number' ? userA.accountElo : 1200,
+        ping: Number.isFinite(pingMs as number) ? pingMs : null,
+    };
+    const playerInfoB = {
+        uid: bestB,
+        userName: userB.userName ?? 'Unknown',
+        countryCode: userB.countryCode ?? '',
+        accountElo: typeof userB.accountElo === 'number' ? userB.accountElo : 1200,
+        ping: Number.isFinite(pingMs as number) ? pingMs : null,
+    };
+
+    // 30-second confirmation window — auto-cancel if neither accepts in time
+    const timeout = setTimeout(() => {
+        if (!pendingRankMatches.has(matchId)) return;
+        pendingRankMatches.delete(matchId);
+        sendToUser(bestA!, { type: 'rank-queue-timeout', matchId });
+        sendToUser(bestB!, { type: 'rank-queue-timeout', matchId });
+    }, 30_000);
+
+    pendingRankMatches.set(matchId, { matchId, uidA: bestA, uidB: bestB, gameName: matchedGameName, accepted: new Set(), timeout });
+
+    sendToUser(bestA, { type: 'rank-queue-pending', matchId, playerA: playerInfoA, playerB: playerInfoB });
+    sendToUser(bestB, { type: 'rank-queue-pending', matchId, playerA: playerInfoA, playerB: playerInfoB });
+
+    broadcastUserListForUser(bestA);
+    broadcastUserListForUser(bestB);
+}
+
+function handleRankQueueAccept(ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-accept' }>) {
+    const { matchId, uid } = message;
+    if (!ctx.ws.uid || uid !== ctx.ws.uid) return;
+
+    const pending = pendingRankMatches.get(matchId);
+    if (!pending) return;
+    if (uid !== pending.uidA && uid !== pending.uidB) return;
+
+    pending.accepted.add(uid);
+
+    if (pending.accepted.has(pending.uidA) && pending.accepted.has(pending.uidB)) {
+        clearTimeout(pending.timeout);
+        pendingRankMatches.delete(matchId);
+        startRankedMatch(pending.uidA, pending.uidB, ctx.wss, pending.gameName, matchId);
+    }
+}
+
+function handleRankQueueDecline(ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-decline' }>) {
+    const { matchId, uid } = message;
+    if (!ctx.ws.uid || uid !== ctx.ws.uid) return;
+
+    const pending = pendingRankMatches.get(matchId);
+    if (!pending) return;
+    if (uid !== pending.uidA && uid !== pending.uidB) return;
+
+    clearTimeout(pending.timeout);
+    pendingRankMatches.delete(matchId);
+
+    const otherUid = uid === pending.uidA ? pending.uidB : pending.uidA;
+    sendToUser(uid, { type: 'rank-queue-cancelled', matchId, reason: 'declined' });
+    sendToUser(otherUid, { type: 'rank-queue-cancelled', matchId, reason: 'opponent-declined' });
+}
+
+function startRankedMatch(uidA: string, uidB: string, wss: WebSocketServer, gameName?: string, matchId?: string) {
+    const userA = connectedUsers.get(uidA);
+    const userB = connectedUsers.get(uidB);
+    if (!userA || !userB) return;
+    if (userA.ws?.readyState !== WebSocket.OPEN || userB.ws?.readyState !== WebSocket.OPEN) return;
+
+    const resolvedMatchId = matchId ?? randomUUID();
+    const resolvedGameName = gameName ?? null;
+    const lobbyId = DEFAULT_LOBBY_ID;
+    const serverPort = Number(serverInfo.PUNCH_PORT ?? 0) || 33334;
+
+    const basePayload = {
+        type: 'match-start',
+        matchId: resolvedMatchId,
+        lobbyId,
+        gameName: resolvedGameName,
+        serverHost: serverInfo.COTURN_IP,
+        serverPort,
+        requestedBy: 'ranked-queue',
+        isRanked: true,
+    };
+
+    if (userA.ws?.readyState === WebSocket.OPEN) {
+        userA.ws.send(JSON.stringify({ ...basePayload, playerSlot: 0, opponentUid: uidB }));
+    }
+    if (userB.ws?.readyState === WebSocket.OPEN) {
+        userB.ws.send(JSON.stringify({ ...basePayload, playerSlot: 1, opponentUid: uidA }));
+    }
+
+    activeMatches.set(resolvedMatchId, {
+        id: resolvedMatchId,
+        lobbyId,
+        startedAt: Date.now(),
+        gameName: resolvedGameName,
+        players: [
+            buildMatchPlayerEntry(userA, 0),
+            buildMatchPlayerEntry(userB, 1),
+        ],
+    });
+
+    connectedUsers.set(uidA, { ...userA, currentMatchId: resolvedMatchId });
+    connectedUsers.set(uidB, { ...userB, currentMatchId: resolvedMatchId });
+
+    broadcastUserListForUser(uidA);
+    broadcastUserListForUser(uidB);
     broadcastMatchListSnapshot(wss);
 }

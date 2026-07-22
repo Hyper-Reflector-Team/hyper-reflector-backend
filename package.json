@@ -6,7 +6,17 @@
   "scripts": {
     "express": "node src/express-server/v2Express.js",
     "sockets": "npx ts-node src/websocket-server/server.ts",
-    "holepuncher": "go run src/util-servers/holepunch/gopunchv1.go"
+    "holepuncher": "go run src/util-servers/holepunch/gopunchv1.go",
+    "test": "npx ts-node src/tests/match-flow-test.ts",
+    "test:signal": "npx ts-node src/tests/match-flow-test.ts --skip-emu --skip-punch",
+    "test:punch": "npx ts-node src/tests/match-flow-test.ts --skip-emu",
+    "test:wait": "npx ts-node src/tests/match-flow-test.ts --wait",
+    "test:challenge": "npx ts-node src/tests/match-flow-test.ts --target LcPLpfKXB0ON0UoIP9esWe73UJu2",
+    "test:webrtc-challenge": "npx ts-node src/tests/match-flow-test.ts --webrtc --target LcPLpfKXB0ON0UoIP9esWe73UJu2",
+    "test:rank": "npx ts-node src/tests/match-flow-test.ts --rank --skip-punch",
+    "test:rank:decline": "npx ts-node src/tests/match-flow-test.ts --rank-decline --skip-punch",
+    "test:rank:timeout": "npx ts-node src/tests/match-flow-test.ts --rank-timeout --skip-punch",
+    "test:ping-bot": "npx ts-node src/tests/match-flow-test.ts --ping-bot"
   },
   "author": "",
   "license": "ISC",
@@ -24,6 +34,7 @@
     "geolib": "^3.3.4",
     "gravatar.js": "^2.0.0",
     "uuid": "^11.1.0",
+    "node-datachannel": "^0.22.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
