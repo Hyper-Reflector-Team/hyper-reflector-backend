@@ -30,7 +30,7 @@ function tournamentDocData(doc) {
     return { id: doc.id, ...doc.data() }
 }
 
-async function createTournament({ name, description, gameName, format, maxParticipants, startDate, organizerUid }) {
+async function createTournament({ name, description, gameName, format, maxParticipants, startDate, timezone, organizerUid }) {
     if (!name || !organizerUid) throw new Error('name and organizerUid are required')
     if (format !== 'single-elim' && format !== 'double-elim') throw new Error('format must be single-elim or double-elim')
     if (startDate && new Date(startDate).getTime() < Date.now()) throw new Error('startDate must be in the future')
@@ -45,8 +45,11 @@ async function createTournament({ name, description, gameName, format, maxPartic
         maxParticipants: maxParticipants || null,
         // Planned/advertised date, set by the organizer at creation time — purely
         // informational. Distinct from `startedAt`, which is the real timestamp
-        // stamped when the tournament actually moves to in_progress.
+        // stamped when the tournament actually moves to in_progress. Stored as a
+        // real UTC instant; `timezone` (IANA name) is kept only so viewers can be
+        // shown the organizer's original reference time alongside their own.
         startDate: startDate || null,
+        timezone: timezone || null,
         status: 'registration_open',
         createdAt: FieldValue.serverTimestamp(),
         startedAt: null,

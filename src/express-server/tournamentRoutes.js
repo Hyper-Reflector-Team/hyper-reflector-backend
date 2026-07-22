@@ -18,7 +18,7 @@ function registerTournamentRoutes(app) {
     app.post('/tournament/create', async (req, res) => {
         try {
             const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
-            const { name, description, gameName, format, maxParticipants, startDate } = req.body
+            const { name, description, gameName, format, maxParticipants, startDate, timezone } = req.body
             const tournament = await data.createTournament({
                 name,
                 description,
@@ -26,6 +26,7 @@ function registerTournamentRoutes(app) {
                 format,
                 maxParticipants,
                 startDate,
+                timezone,
                 organizerUid: decodedToken.uid,
             })
             res.json({ tournament })
