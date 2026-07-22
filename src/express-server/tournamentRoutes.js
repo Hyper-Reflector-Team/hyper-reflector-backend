@@ -18,13 +18,14 @@ function registerTournamentRoutes(app) {
     app.post('/tournament/create', async (req, res) => {
         try {
             const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
-            const { name, description, gameName, format, maxParticipants } = req.body
+            const { name, description, gameName, format, maxParticipants, startDate } = req.body
             const tournament = await data.createTournament({
                 name,
                 description,
                 gameName,
                 format,
                 maxParticipants,
+                startDate,
                 organizerUid: decodedToken.uid,
             })
             res.json({ tournament })
@@ -124,13 +125,37 @@ function registerTournamentRoutes(app) {
         }
     })
 
-    app.post('/tournament/lock-start', async (req, res) => {
+    app.post('/tournament/add-mock-players', async (req, res) => {
         try {
             const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
-            const result = await data.lockAndStart(req.body.tournamentId, decodedToken.uid)
+            const { tournamentId, count } = req.body
+            const result = await data.addMockRegistrations(tournamentId, count, decodedToken.uid)
             res.json(result)
         } catch (err) {
-            console.error('tournament/lock-start failed', err)
+            console.error('tournament/add-mock-players failed', err)
+            res.status(errorStatus(err.message)).json({ error: err.message || 'Server error' })
+        }
+    })
+
+    app.post('/tournament/remove-registration', async (req, res) => {
+        try {
+            const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+            const { tournamentId, uid } = req.body
+            const result = await data.removeRegistration(tournamentId, uid, decodedToken.uid)
+            res.json(result)
+        } catch (err) {
+            console.error('tournament/remove-registration failed', err)
+            res.status(errorStatus(err.message)).json({ error: err.message || 'Server error' })
+        }
+    })
+
+    app.post('/tournament/start', async (req, res) => {
+        try {
+            const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+            const result = await data.startTournament(req.body.tournamentId, decodedToken.uid)
+            res.json(result)
+        } catch (err) {
+            console.error('tournament/start failed', err)
             res.status(errorStatus(err.message)).json({ error: err.message || 'Server error' })
         }
     })

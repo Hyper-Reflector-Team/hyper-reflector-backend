@@ -3,6 +3,7 @@
 // domain) so this feature stays a self-contained module — see the tournament
 // feature plan for why that matters here.
 const { getFirestore, FieldValue } = require('firebase-admin/firestore')
+const { randomUUID } = require('crypto')
 const engine = require('./tournamentEngine')
 
 const db = getFirestore()
@@ -29,9 +30,10 @@ function tournamentDocData(doc) {
     return { id: doc.id, ...doc.data() }
 }
 
-async function createTournament({ name, description, gameName, format, maxParticipants, organizerUid }) {
+async function createTournament({ name, description, gameName, format, maxParticipants, startDate, organizerUid }) {
     if (!name || !organizerUid) throw new Error('name and organizerUid are required')
     if (format !== 'single-elim' && format !== 'double-elim') throw new Error('format must be single-elim or double-elim')
+    if (startDate && new Date(startDate).getTime() < Date.now()) throw new Error('startDate must be in the future')
 
     const docRef = tournamentsRef.doc()
     const tournament = {
@@ -41,6 +43,10 @@ async function createTournament({ name, description, gameName, format, maxPartic
         format,
         organizerUid,
         maxParticipants: maxParticipants || null,
+        // Planned/advertised date, set by the organizer at creation time — purely
+        // informational. Distinct from `startedAt`, which is the real timestamp
+        // stamped when the tournament actually moves to in_progress.
+        startDate: startDate || null,
         status: 'registration_open',
         createdAt: FieldValue.serverTimestamp(),
         startedAt: null,
@@ -149,6 +155,81 @@ async function generateBracket(tournamentId, organizerUid) {
     return { matches }
 }
 
+// Synthetic registrants for testing bracket layouts without needing real
+// accounts. Marked isMock so the UI can label them and the organizer can
+// remove them individually via removeRegistration.
+async function addMockRegistrations(tournamentId, count, organizerUid) {
+    const tournamentDocRef = tournamentsRef.doc(tournamentId)
+    const tournament = await getTournament(tournamentId)
+    assertOrganizer(tournament, organizerUid)
+    if (tournament.status !== 'registration_open') throw new Error('Mock players can only be added while registration is open')
+
+    const existing = await listRegistrations(tournamentId)
+    const safeCount = Math.min(Math.max(Number(count) || 0, 1), 64)
+
+    const batch = db.batch()
+    const created = []
+    for (let i = 0; i < safeCount; i++) {
+        if (tournament.maxParticipants && existing.length + created.length >= tournament.maxParticipants) break
+        const uid = `mock-${randomUUID().slice(0, 8)}`
+        const registration = {
+            uid,
+            userName: `Mock Player ${existing.length + created.length + 1}`,
+            countryCode: '',
+            accountElo: 1200,
+            seed: null,
+            isMock: true,
+            registeredAt: FieldValue.serverTimestamp(),
+        }
+        batch.set(tournamentDocRef.collection('registrations').doc(uid), registration)
+        created.push(registration)
+    }
+    await batch.commit()
+    return { added: created.length }
+}
+
+// Organizer removal of any registrant (real or mock) while registration is
+// still open — separate from self-withdraw, which only the registrant can do.
+async function removeRegistration(tournamentId, uid, organizerUid) {
+    const tournament = await getTournament(tournamentId)
+    assertOrganizer(tournament, organizerUid)
+    if (tournament.status !== 'registration_open') throw new Error('Registrations can only be removed while registration is open')
+    await tournamentsRef.doc(tournamentId).collection('registrations').doc(uid).delete()
+    return { removed: true }
+}
+
+// Combined generate-bracket + lock-start in a single step, for organizers who
+// don't need to rearrange seeding first. Also usable from 'seeding' to lock in
+// a bracket that was already generated and manually rearranged via assignSlot.
+async function startTournament(tournamentId, organizerUid) {
+    const tournamentDocRef = tournamentsRef.doc(tournamentId)
+    const tournamentDoc = await tournamentDocRef.get()
+    const tournament = tournamentDocData(tournamentDoc)
+    assertOrganizer(tournament, organizerUid)
+    if (tournament.status !== 'registration_open' && tournament.status !== 'seeding') {
+        throw new Error(`Cannot start from status ${tournament.status}`)
+    }
+
+    if (tournament.status === 'registration_open') {
+        const registrations = await listRegistrations(tournamentId)
+        if (registrations.length < 2) throw new Error('At least 2 registered players are required')
+        const participants = registrations.map((r) => ({ uid: r.uid, userName: r.userName }))
+        const { matches } = engine.generateBracket(participants, tournament.format)
+
+        const batch = db.batch()
+        const matchesRef = tournamentDocRef.collection('matches')
+        for (const match of matches) {
+            batch.set(matchesRef.doc(match.id), match)
+        }
+        batch.update(tournamentDocRef, { status: 'in_progress', startedAt: FieldValue.serverTimestamp() })
+        await batch.commit()
+    } else {
+        await tournamentDocRef.update({ status: 'in_progress', startedAt: FieldValue.serverTimestamp() })
+    }
+
+    return { started: true }
+}
+
 async function listMatches(tournamentId) {
     const snapshot = await tournamentsRef.doc(tournamentId).collection('matches').get()
     return snapshot.docs.map((doc) => doc.data())
@@ -176,22 +257,19 @@ async function assignSlot(tournamentId, matchId, slotNum, uid, organizerUid) {
 
     let slotData = { uid: null, userName: null, isBye: true }
     if (uid) {
-        const userSummary = await lookupUserSummary(uid)
-        if (!userSummary) throw new Error('User not found')
-        slotData = { uid: userSummary.uid, userName: userSummary.userName, isBye: false }
+        // Look up the name from this tournament's own registrations rather than
+        // the global users collection — mock test registrants (see
+        // addMockRegistrations) don't exist there, and a registrant's snapshot
+        // name at registration time is the correct source of truth here anyway.
+        const registrations = await listRegistrations(tournamentId)
+        const registration = registrations.find((r) => r.uid === uid)
+        if (!registration) throw new Error('User not found')
+        slotData = { uid: registration.uid, userName: registration.userName, isBye: false }
     }
 
     const field = slotNum === 1 ? 'slot1' : 'slot2'
     await matchRef.update({ [field]: slotData })
     return { updated: true }
-}
-
-async function lockAndStart(tournamentId, organizerUid) {
-    const tournament = await getTournament(tournamentId)
-    assertOrganizer(tournament, organizerUid)
-    if (tournament.status !== 'seeding') throw new Error(`Cannot start from status ${tournament.status}`)
-    await tournamentsRef.doc(tournamentId).update({ status: 'in_progress', startedAt: FieldValue.serverTimestamp() })
-    return { started: true }
 }
 
 async function setStatus(tournamentId, organizerUid, fromStatuses, toStatus, extraFields = {}) {
@@ -284,7 +362,9 @@ module.exports = {
     generateBracket,
     listMatches,
     assignSlot,
-    lockAndStart,
+    addMockRegistrations,
+    removeRegistration,
+    startTournament,
     pauseTournament,
     resumeTournament,
     cancelTournament,
