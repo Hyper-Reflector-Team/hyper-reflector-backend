@@ -150,7 +150,10 @@ export type SignalMessage =
     | { type: 'unsubscribeLobby'; lobbyId: string }
     | { type: 'updateLobbyGame'; lobbyId: string; gameName: string }
     | { type: 'rank-queue-accept'; matchId: string; uid: string }
-    | { type: 'rank-queue-decline'; matchId: string; uid: string };
+    | { type: 'rank-queue-decline'; matchId: string; uid: string }
+    | { type: 'tournament-subscribe'; tournamentId: string; uid: string }
+    | { type: 'tournament-unsubscribe'; tournamentId: string; uid: string }
+    | { type: 'tournament-changed'; tournamentId: string; uid: string };
 
 export type RankQueueEntry = {
     uid: string

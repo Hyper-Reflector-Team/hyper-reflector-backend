@@ -368,8 +368,9 @@ async function getUserAccountByAuth(token) {
     if (!token) return
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
-        console.log(querySnapshot.docs[0].data())
-        return querySnapshot.docs[0].data()
+        const doc = querySnapshot.docs[0]
+        const { userEmail, ...filteredData } = doc.data() // exclude email
+        return sanitizeUserRecord(filteredData)
     } else {
         return null
     }
@@ -409,12 +410,26 @@ function isMockOrUnknownOpponent(opponentUid) {
     return opponentUid.startsWith('mock-') || opponentUid === 'unknown-opponent'
 }
 
+async function isRegisteredUser(targetUid) {
+    if (!targetUid) return false
+    const querySnapshot = await usersRef.where('uid', '==', targetUid).get()
+    return !querySnapshot.empty
+}
+
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
     if (!matchData.player1 || !matchData.player2) return
 
-    const opponentUid = uid === matchData.player1 ? matchData.player2 : matchData.player1
-    if (isMockOrUnknownOpponent(opponentUid) && !MOCK_UPLOAD_WHITELIST.has(uid)) return
+    // Whitelisted admin/dev accounts can force-upload matches for any pair of
+    // players (including mock/unknown opponents) for testing purposes.
+    if (!MOCK_UPLOAD_WHITELIST.has(uid)) {
+        const isParticipant = uid === matchData.player1 || uid === matchData.player2
+        if (!isParticipant) return
+
+        const opponentUid = uid === matchData.player1 ? matchData.player2 : matchData.player1
+        if (isMockOrUnknownOpponent(opponentUid)) return
+        if (!(await isRegisteredUser(opponentUid))) return
+    }
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)

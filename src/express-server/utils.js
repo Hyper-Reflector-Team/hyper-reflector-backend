@@ -59,14 +59,16 @@ function eloScore (score1, score2, elo1, elo2) {
   console.log(' PLAYER 2 went from ' + elo2 + ' to ' + res2)
 }
 
-let myArgs = process.argv.slice(2);
-if (myArgs[0] === undefined || myArgs[1] === undefined || myArgs[2] === undefined || myArgs[3] === undefined) {
-  console.log("USAGE: node fc2-elo.js <score1> <score2> <elo1> <elo2>")
-  console.log("   example: node fc2-elo.js 8 10 1554 1305")
-} else {
-  p1score = parseInt(myArgs[0])
-  p2score = parseInt(myArgs[1])
-  p1elo = parseInt(myArgs[2])
-  p2elo = parseInt(myArgs[3])
-  eloScore(p1score, p2score, p1elo, p2elo)
+if (require.main === module) {
+  const myArgs = process.argv.slice(2)
+  if (myArgs[0] === undefined || myArgs[1] === undefined || myArgs[2] === undefined || myArgs[3] === undefined) {
+    console.log("USAGE: node fc2-elo.js <score1> <score2> <elo1> <elo2>")
+    console.log("   example: node fc2-elo.js 8 10 1554 1305")
+  } else {
+    const p1score = parseInt(myArgs[0])
+    const p2score = parseInt(myArgs[1])
+    const p1elo = parseInt(myArgs[2])
+    const p2elo = parseInt(myArgs[3])
+    eloScore(p1score, p2score, p1elo, p2elo)
+  }
 }

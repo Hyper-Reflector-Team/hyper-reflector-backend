@@ -9,6 +9,10 @@ export const userLobby = new Map<string, string>()
 export const userSubscriptions = new Map<string, Set<string>>()
 // Ranked queue entries
 export const rankQueue = new Map<string, RankQueueEntry>()
+// Tournament-viewer relay: tournamentId → Set<uid> of clients currently watching
+// it. Purely a pub/sub relay — no tournament data lives here, only Firestore
+// (via the Express tournament routes) is the source of truth.
+export const tournamentSubscriptions = new Map<string, Set<string>>()
 export const activeMatches = new Map<
     string,
     {

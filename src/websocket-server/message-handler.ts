@@ -3,7 +3,7 @@ import dgram from 'dgram';
 import { randomUUID } from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches, userSubscriptions, rankQueue } from './state';
+import { connectedUsers, lobbyMeta, lobbies, userLobby, activeMatches, userSubscriptions, rankQueue, tournamentSubscriptions } from './state';
 import { ConnectedUser, MessageContext, SignalMessage, SocketUser } from './types';
 import {
     broadcastKillPeer,
@@ -102,6 +102,38 @@ function sendToUser(uid: string, payload: unknown) {
     target.ws.send(JSON.stringify(payload));
 }
 
+// Tournament viewer relay — pure pub/sub, no tournament data touches this file.
+// Actual tournament state lives in Firestore, written only via the Express
+// /tournament/* routes; this just tells other viewers of the same tournament
+// to go refetch it.
+function handleTournamentSubscribe(message: Extract<SignalMessage, { type: 'tournament-subscribe' }>) {
+    if (!message.tournamentId || !message.uid) return;
+    let subs = tournamentSubscriptions.get(message.tournamentId);
+    if (!subs) {
+        subs = new Set<string>();
+        tournamentSubscriptions.set(message.tournamentId, subs);
+    }
+    subs.add(message.uid);
+}
+
+function handleTournamentUnsubscribe(message: Extract<SignalMessage, { type: 'tournament-unsubscribe' }>) {
+    if (!message.tournamentId || !message.uid) return;
+    const subs = tournamentSubscriptions.get(message.tournamentId);
+    if (!subs) return;
+    subs.delete(message.uid);
+    if (subs.size === 0) tournamentSubscriptions.delete(message.tournamentId);
+}
+
+function handleTournamentChanged(message: Extract<SignalMessage, { type: 'tournament-changed' }>) {
+    if (!message.tournamentId || !message.uid) return;
+    const subs = tournamentSubscriptions.get(message.tournamentId);
+    if (!subs) return;
+    for (const uid of subs) {
+        if (uid === message.uid) continue; // the sender already has the fresh state locally
+        sendToUser(uid, { type: 'tournament-changed', tournamentId: message.tournamentId });
+    }
+}
+
 type SerializedMatch = {
     id: string;
     lobbyId: string;
@@ -191,7 +223,7 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             await handleJoin(ctx, message.user, message.lobbyId, message.pass);
             break;
         case 'updateProfile':
-            handleUpdateProfile(message.user);
+            handleUpdateProfile(ctx, message.user);
             break;
         case 'updateSocketState':
             await handleUpdateSocketState(ctx, message.data);
@@ -218,6 +250,9 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             }
             broadcastKillPeer(disconnectedUid, ctx.wss);
             forceCloseMatchForUser(disconnectedUid, ctx.wss, 'user-disconnected');
+            for (const subs of tournamentSubscriptions.values()) {
+                subs.delete(disconnectedUid ?? '');
+            }
             break;
         }
         case 'sendMessage':
@@ -231,13 +266,13 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
         case 'webrtc-ping-answer':
         case 'webrtc-ping-decline':
         case 'webrtc-ping-candidate':
-            forwardWebRtc(message);
+            forwardWebRtc(ctx, message);
             break;
         case 'peer-latency-offer':
         case 'peer-latency-answer':
         case 'peer-latency-decline':
         case 'peer-latency-candidate':
-            forwardWebRtc(message);
+            forwardWebRtc(ctx, message);
             break;
         case 'estimate-ping-users':
             await handleEstimatePing(ctx, message.data);
@@ -274,6 +309,15 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'rank-queue-decline':
             handleRankQueueDecline(ctx, message);
+            break;
+        case 'tournament-subscribe':
+            handleTournamentSubscribe(message);
+            break;
+        case 'tournament-unsubscribe':
+            handleTournamentUnsubscribe(message);
+            break;
+        case 'tournament-changed':
+            handleTournamentChanged(message);
             break;
         default:
             ctx.logger.warn('Unhandled message type', message);
@@ -326,8 +370,9 @@ async function handleJoin(ctx: MessageContext, user: ConnectedUser['ws'] extends
     void populateGeoForUser(ctx, connectedUser);
 }
 
-function handleUpdateProfile(user: SocketUser) {
+function handleUpdateProfile(ctx: MessageContext, user: SocketUser) {
     if (!user?.uid) return;
+    if (!ctx.ws.uid || user.uid !== ctx.ws.uid) return;
     const existing = connectedUsers.get(user.uid);
     if (!existing) return;
 
@@ -352,6 +397,11 @@ async function handleUpdateSocketState(
     ctx: MessageContext,
     data: Extract<SignalMessage, { type: 'updateSocketState' }>['data']
 ) {
+    if (!ctx.ws.uid || data.uid !== ctx.ws.uid) {
+        ctx.logger.warn(`Rejected updateSocketState for UID ${data.uid}: does not match authenticated socket`);
+        return;
+    }
+
     const userToUpdate = connectedUsers.get(data.uid);
     if (!userToUpdate) {
         ctx.logger.warn(`No user found for UID ${data.uid}`);
@@ -655,7 +705,7 @@ async function handleSendMessage(sender: SocketUser | undefined, message: string
     broadcastUserMessage(lobbyId, trimmedMessage, senderWithLobby, messageId);
 }
 
-function forwardWebRtc(message: Extract<
+function forwardWebRtc(ctx: MessageContext, message: Extract<
     SignalMessage,
     {
         type:
@@ -670,6 +720,14 @@ function forwardWebRtc(message: Extract<
     }
 >) {
     if (message.to === message.from) return;
+
+    // The client claims to be `from` — refuse to relay unless that matches the
+    // uid this socket actually joined as, so one client can't impersonate another
+    // in challenge/ping signaling.
+    if (!ctx.ws.uid || message.from !== ctx.ws.uid) {
+        ctx.logger.warn(`Rejected forged ${message.type}: socket uid "${ctx.ws.uid}" claimed from "${message.from}"`);
+        return;
+    }
 
     const targetUser = connectedUsers.get(message.to);
     if (!targetUser) return;
@@ -1181,8 +1239,11 @@ function tryRankMatch(_wss: WebSocketServer) {
 
 function handleRankQueueAccept(ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-accept' }>) {
     const { matchId, uid } = message;
+    if (!ctx.ws.uid || uid !== ctx.ws.uid) return;
+
     const pending = pendingRankMatches.get(matchId);
     if (!pending) return;
+    if (uid !== pending.uidA && uid !== pending.uidB) return;
 
     pending.accepted.add(uid);
 
@@ -1193,10 +1254,13 @@ function handleRankQueueAccept(ctx: MessageContext, message: Extract<SignalMessa
     }
 }
 
-function handleRankQueueDecline(_ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-decline' }>) {
+function handleRankQueueDecline(ctx: MessageContext, message: Extract<SignalMessage, { type: 'rank-queue-decline' }>) {
     const { matchId, uid } = message;
+    if (!ctx.ws.uid || uid !== ctx.ws.uid) return;
+
     const pending = pendingRankMatches.get(matchId);
     if (!pending) return;
+    if (uid !== pending.uidA && uid !== pending.uidB) return;
 
     clearTimeout(pending.timeout);
     pendingRankMatches.delete(matchId);
