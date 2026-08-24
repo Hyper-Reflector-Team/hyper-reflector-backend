@@ -79,12 +79,12 @@ const (
 	SPECTATE_TCP_PORT = 33336
 
 	publisherTimeout = 15 * time.Second
-	watcherTimeout    = 15 * time.Second
-	pruneInterval     = 5 * time.Second
+	watcherTimeout   = 15 * time.Second
+	pruneInterval    = 5 * time.Second
 
 	snapshotRequestTimeout = 5 * time.Second
 	maxHeaderSize          = 4096
-	maxSnapshotPayload      = 64 * 1024 * 1024 // sanity cap; real state blobs are far smaller
+	maxSnapshotPayload     = 64 * 1024 * 1024 // sanity cap; real state blobs are far smaller
 )
 
 // ---------------------------------------------------------------------------
@@ -104,11 +104,40 @@ var (
 )
 
 type udpEnvelope struct {
-	Type    string `json:"type"`
-	MatchID string `json:"matchId"`
-	UID     string `json:"uid,omitempty"`
-	Frame   int64  `json:"frame,omitempty"`
-	Data    string `json:"data,omitempty"`
+	Type     string `json:"type"`
+	MatchID  string `json:"matchId"`
+	UID      string `json:"uid,omitempty"`
+	Frame    int64  `json:"frame,omitempty"`
+	Data     string `json:"data,omitempty"`
+	UserName string `json:"userName,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Count    int    `json:"count,omitempty"`
+}
+
+// Sent to a match's publisher and all of its watchers whenever the watcher set changes size
+// (join, leave, or timeout-prune) -- see the "watch"/"unwatch" cases and pruneStaleUDP below.
+func broadcastSpectatorCount(conn *net.UDPConn, matchId string) {
+	udpMu.Lock()
+	count := len(subscribers[matchId])
+	var targets []udpRegistration
+	if pub, ok := publishers[matchId]; ok {
+		targets = append(targets, pub)
+	}
+	for _, w := range subscribers[matchId] {
+		targets = append(targets, w)
+	}
+	udpMu.Unlock()
+
+	if len(targets) == 0 {
+		return
+	}
+	out, err := json.Marshal(udpEnvelope{Type: "spectator-count", MatchID: matchId, Count: count})
+	if err != nil {
+		return
+	}
+	for _, t := range targets {
+		_, _ = conn.WriteToUDP(out, t.addr)
+	}
 }
 
 func runUDPRelay() {
@@ -125,7 +154,7 @@ func runUDPRelay() {
 		ticker := time.NewTicker(pruneInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			pruneStaleUDP()
+			pruneStaleUDP(conn)
 		}
 	}()
 
@@ -175,18 +204,31 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		if subscribers[msg.MatchID] == nil {
 			subscribers[msg.MatchID] = make(map[string]udpRegistration)
 		}
+		_, alreadyWatching := subscribers[msg.MatchID][msg.UID]
 		subscribers[msg.MatchID][msg.UID] = udpRegistration{addr: remote, uid: msg.UID, lastSeen: time.Now()}
 		udpMu.Unlock()
+
+		// Only broadcast on an actual join, not the periodic keepalive re-registration
+		// (see SPECTATE_REGISTER_INTERVAL_MS in fbn_spectate.cpp) that keeps this from expiring.
+		if !alreadyWatching {
+			broadcastSpectatorCount(conn, msg.MatchID)
+		}
 
 	case "unwatch":
 		if msg.UID == "" {
 			return
 		}
 		udpMu.Lock()
-		if watchers, ok := subscribers[msg.MatchID]; ok {
+		watchers, ok := subscribers[msg.MatchID]
+		_, wasWatching := watchers[msg.UID]
+		if ok {
 			delete(watchers, msg.UID)
 		}
 		udpMu.Unlock()
+
+		if wasWatching {
+			broadcastSpectatorCount(conn, msg.MatchID)
+		}
 
 	case "frame":
 		udpMu.Lock()
@@ -219,17 +261,55 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 			_, _ = conn.WriteToUDP(out, t.addr)
 		}
 
+	case "chat":
+		// Spectator-only chat: fans out to this match's other watchers and nothing else --
+		// never touches the publishers map, so it can never reach the players. Sender must be
+		// a currently-registered watcher of this match (same anti-spoofing check as "frame"
+		// above, just against the subscribers map instead of publishers) so a stranger can't
+		// inject chat into a match they never joined as a spectator.
+		udpMu.Lock()
+		watchers, ok := subscribers[msg.MatchID]
+		if !ok {
+			udpMu.Unlock()
+			return
+		}
+		sender, isWatcher := watchers[msg.UID]
+		if !isWatcher || sender.addr.String() != remote.String() {
+			udpMu.Unlock()
+			return
+		}
+
+		var targets []udpRegistration
+		for uid, w := range watchers {
+			if uid == msg.UID {
+				continue // sender already echoes their own message locally, don't send it back
+			}
+			targets = append(targets, w)
+		}
+		udpMu.Unlock()
+
+		if len(targets) == 0 {
+			return
+		}
+		out, err := json.Marshal(msg)
+		if err != nil {
+			return
+		}
+		for _, t := range targets {
+			_, _ = conn.WriteToUDP(out, t.addr)
+		}
+
 	default:
 		// Unknown type — ignore. Keeps this relay forward-compatible with
 		// clients that add new envelope types the relay doesn't need to react to.
 	}
 }
 
-func pruneStaleUDP() {
+func pruneStaleUDP(conn *net.UDPConn) {
 	now := time.Now()
-	udpMu.Lock()
-	defer udpMu.Unlock()
+	var changedMatches []string
 
+	udpMu.Lock()
 	for matchId, pub := range publishers {
 		if now.Sub(pub.lastSeen) > publisherTimeout {
 			delete(publishers, matchId)
@@ -238,14 +318,24 @@ func pruneStaleUDP() {
 		}
 	}
 	for matchId, watchers := range subscribers {
+		before := len(watchers)
 		for uid, w := range watchers {
 			if now.Sub(w.lastSeen) > watcherTimeout {
 				delete(watchers, uid)
 			}
 		}
+		if len(watchers) != before {
+			changedMatches = append(changedMatches, matchId)
+		}
 		if len(watchers) == 0 {
 			delete(subscribers, matchId)
 		}
+	}
+	udpMu.Unlock()
+
+	// Broadcast outside the lock -- these are network sends, not map access.
+	for _, matchId := range changedMatches {
+		broadcastSpectatorCount(conn, matchId)
 	}
 }
 
