@@ -1,10 +1,3 @@
-// Tournament feature routes. Kept in a dedicated module (rather than growing
-// v2Express.js further) so the feature stays easy to lift into a standalone
-// service later — see the tournament feature plan.
-//
-// Matches the rest of v2Express.js's conventions exactly: every route is POST
-// (even reads — same as /get-user-matches, /get-global-set etc.), auth is
-// verifyIdToken(req.body.idToken), errors are res.status(4xx/5xx).json({error}).
 const { getAuth } = require('firebase-admin/auth')
 const data = require('./tournamentData')
 
@@ -106,7 +99,7 @@ function registerTournamentRoutes(app) {
     app.post('/tournament/generate-bracket', async (req, res) => {
         try {
             const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
-            const result = await data.generateBracket(req.body.tournamentId, decodedToken.uid)
+            const result = await data.generateBracket(req.body.tournamentId, decodedToken.uid, req.body.seedBy)
             res.json(result)
         } catch (err) {
             console.error('tournament/generate-bracket failed', err)
@@ -153,7 +146,7 @@ function registerTournamentRoutes(app) {
     app.post('/tournament/start', async (req, res) => {
         try {
             const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
-            const result = await data.startTournament(req.body.tournamentId, decodedToken.uid)
+            const result = await data.startTournament(req.body.tournamentId, decodedToken.uid, req.body.seedBy)
             res.json(result)
         } catch (err) {
             console.error('tournament/start failed', err)
@@ -202,6 +195,37 @@ function registerTournamentRoutes(app) {
             res.json(result)
         } catch (err) {
             console.error('tournament/report-match failed', err)
+            res.status(errorStatus(err.message)).json({ error: err.message || 'Server error' })
+        }
+    })
+
+    app.post('/tournament/revert-match', async (req, res) => {
+        try {
+            const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+            const { tournamentId, matchId } = req.body
+            const result = await data.revertMatchWinner(tournamentId, matchId, decodedToken.uid)
+            res.json(result)
+        } catch (err) {
+            console.error('tournament/revert-match failed', err)
+            res.status(errorStatus(err.message)).json({ error: err.message || 'Server error' })
+        }
+    })
+
+    app.post('/tournament/update', async (req, res) => {
+        try {
+            const decodedToken = await getAuth().verifyIdToken(req.body.idToken)
+            const { tournamentId, name, description, gameName, startDate, timezone, maxParticipants } = req.body
+            const result = await data.updateTournamentDetails(tournamentId, decodedToken.uid, {
+                name,
+                description,
+                gameName,
+                startDate,
+                timezone,
+                maxParticipants,
+            })
+            res.json(result)
+        } catch (err) {
+            console.error('tournament/update failed', err)
             res.status(errorStatus(err.message)).json({ error: err.message || 'Server error' })
         }
     })

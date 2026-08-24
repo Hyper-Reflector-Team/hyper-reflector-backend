@@ -1,21 +1,3 @@
-// Pure bracket-generation and advancement logic for the tournament feature.
-// Deliberately has zero Firestore/Express dependencies so it can be lifted into
-// a standalone service later without changes — see the tournament feature plan.
-//
-// Bracket-building strategy:
-//   - Round 1 slots are laid out using the standard seeded-bracket order (1 vs N,
-//     so byes/top seeds are spread evenly rather than clustered).
-//   - Every match beyond round 1 starts with empty slots; slots get filled by
-//     `resolveMatch` propagating a winner into the next match's slot. Byes are
-//     just matches with one real slot and one `isBye` slot, auto-resolved by the
-//     same propagation path used for organizer-reported results — no special-cased
-//     bye logic elsewhere.
-//   - Double-elimination losers-bracket rounds are built by simulation (alternating
-//     "drop" rounds, where losers-bracket survivors face a freshly-dropped winners-
-//     bracket loser, and "consolidation" rounds, where survivors face each other)
-//     rather than a closed-form index formula — this is the same approach real
-//     bracket generators use and is far less error-prone than deriving indices by hand.
-
 function nextPowerOfTwo(n) {
     let p = 1
     while (p < n) p *= 2
@@ -26,7 +8,6 @@ function isPowerOfTwo(n) {
     return n > 0 && (n & (n - 1)) === 0
 }
 
-// e.g. n=4 -> [1,4,2,3], n=8 -> [1,8,4,5,2,7,3,6]
 function standardSeedOrder(n) {
     let seeds = [1, 2]
     while (seeds.length < n) {
@@ -41,14 +22,14 @@ function standardSeedOrder(n) {
 function makeMatch(id, bracketType, round, matchIndex) {
     return {
         id,
-        bracketType, // 'winners' | 'losers' | 'grand-finals'
+        bracketType,
         round,
         matchIndex,
         slot1: null,
         slot2: null,
         winnerUid: null,
         loserUid: null,
-        status: 'pending', // 'pending' | 'ready' | 'reported' | 'bye'
+        status: 'pending',
         nextMatchId: null,
         nextMatchSlot: null,
         nextLoserMatchId: null,
@@ -67,8 +48,6 @@ function findMatch(matches, id) {
     return m
 }
 
-// Fills a slot on a match; if that leaves one real player + one bye, auto-resolves
-// the match immediately (cascades through resolveMatch, same path as a real report).
 function fillSlot(matches, matchId, slotNum, slotData) {
     const match = findMatch(matches, matchId)
     if (slotNum === 1) match.slot1 = slotData
@@ -82,12 +61,9 @@ function fillSlot(matches, matchId, slotNum, slotData) {
         } else if (!match.slot1.isBye && !match.slot2.isBye) {
             match.status = 'ready'
         }
-        // both-bye can't happen given bracket sizing (see generateBracket).
     }
 }
 
-// Records a winner for a match and propagates it (and the loser, for
-// double-elimination) into whatever comes next.
 function resolveMatch(matches, matchId, winnerUid, opts = {}) {
     const match = findMatch(matches, matchId)
     if (match.status === 'reported' || match.status === 'bye') {
@@ -123,11 +99,6 @@ function linkLoserToNext(match, nextMatch, nextSlotNum) {
     match.nextLoserMatchSlot = nextSlotNum
 }
 
-/**
- * Builds the winners bracket for `bracketSize` (a power of 2). Returns
- * { rounds, matches } where rounds[r] is the array of match objects for
- * round r+1 (1-indexed round numbers are stored on the match itself).
- */
 function buildWinnersBracket(slots, matches) {
     const bracketSize = slots.length
     const numRounds = Math.log2(bracketSize)
@@ -160,23 +131,16 @@ function buildWinnersBracket(slots, matches) {
     return { rounds }
 }
 
-/**
- * Builds the losers bracket by simulation: LR1 pairs up WR1's losers directly;
- * each subsequent round either drops in the next fresh batch of winners-bracket
- * losers (when the survivor count matches that batch's size) or consolidates
- * survivors against each other.
- */
 function buildLosersBracket(winnersRounds, matches) {
     const k = winnersRounds.length
     if (k < 2) return { rounds: [], champion: null }
 
     const rounds = []
     let lrIndex = 1
-    let wbRoundIndex = 0 // index into winnersRounds we've dropped losers from so far
+    let wbRoundIndex = 0
 
-    // LR1: pair up WR1's losers directly.
     const wr1 = winnersRounds[0]
-    let survivors = [] // array of { matchIndexInRound } placeholders — we track match objects directly
+    let survivors = []
     let round = []
     for (let m = 0; m < wr1.length / 2; m++) {
         const match = makeMatch(`l-r${lrIndex}-m${m + 1}`, 'losers', lrIndex, m + 1)
@@ -222,11 +186,6 @@ function buildLosersBracket(winnersRounds, matches) {
     return { rounds, champion: survivors[0] }
 }
 
-/**
- * Generates a full bracket skeleton for the given participants.
- * @param {Array<{uid: string, userName: string}>} participants sorted by seed ascending (index 0 = seed 1 = top seed)
- * @param {'single-elim'|'double-elim'} format
- */
 function generateBracket(participants, format) {
     if (!Array.isArray(participants) || participants.length < 2) {
         throw new Error('At least 2 participants are required')
@@ -252,13 +211,8 @@ function generateBracket(participants, format) {
         matches.push(gf1)
         linkToNext(winnersFinal, gf1, 1)
         if (losersChampion) linkToNext(losersChampion, gf1, 2)
-        // gf2 (bracket reset) is created on demand by advanceMatch, only if the
-        // losers-bracket finalist wins gf1 — see advanceMatch for why.
     }
 
-    // Now that every match+link exists, resolve any round-1 byes. This can
-    // cascade (a bye winner can immediately meet another bye winner) so we
-    // resolve in bracket order rather than assuming one pass is enough.
     let changed = true
     while (changed) {
         changed = false
@@ -281,18 +235,12 @@ function generateBracket(participants, format) {
     return { format, bracketSize, matches }
 }
 
-// Placement bookkeeping is intentionally shallow (see plan): exact 1st/2nd only,
-// everyone else grouped by the round they were eliminated in.
 function eliminationLabel(match) {
     if (match.bracketType === 'winners') return `Eliminated in winners round ${match.round}`
     if (match.bracketType === 'losers') return `Eliminated in losers round ${match.round}`
     return 'Eliminated'
 }
 
-/**
- * Reports a winner for a match and returns the updated match list plus
- * completion/placement info. Does not mutate the input array's objects.
- */
 function advanceMatch(existingMatches, matchId, winnerUid) {
     const matches = existingMatches.map((m) => ({ ...m }))
     const match = findMatch(matches, matchId)
@@ -306,8 +254,6 @@ function advanceMatch(existingMatches, matchId, winnerUid) {
         const winnersFinalist = existingMatches.find((m) => m.nextMatchId === 'gf1' && m.nextMatchSlot === 1)
         const isResetNeeded = winnersFinalist && winnersFinalist.winnerUid !== winnerUid
         if (isResetNeeded) {
-            // Losers-bracket finalist beat the winners-bracket finalist: both
-            // now have exactly one loss, so a single deciding match is required.
             const gf2 = makeMatch('gf2', 'grand-finals', 2, 1)
             gf2.slot1 = match.slot1
             gf2.slot2 = match.slot2
@@ -318,9 +264,6 @@ function advanceMatch(existingMatches, matchId, winnerUid) {
     }
 
     const isDoubleElim = matches.some((m) => m.bracketType === 'grand-finals')
-    // Single-elim: the winners final (no nextMatchId) IS the tournament final.
-    // Double-elim: gf1 ends it unless a reset was needed (handled above, which
-    // returns early), in which case gf2 is the true final.
     const isFinal = isDoubleElim ? match.id === 'gf1' || match.id === 'gf2' : !match.nextMatchId
     if (!isFinal) {
         return { matches, completed: false, placements: null }
@@ -342,10 +285,49 @@ function advanceMatch(existingMatches, matchId, winnerUid) {
     return { matches, completed: true, placements }
 }
 
+function revertMatch(existingMatches, matchId) {
+    const matches = existingMatches.map((m) => ({ ...m }))
+    const match = findMatch(matches, matchId)
+    if (match.status !== 'reported') {
+        throw new Error(`Match ${matchId} has not been reported and cannot be reverted`)
+    }
+
+    const next = match.nextMatchId ? findMatch(matches, match.nextMatchId) : null
+    if (next && (next.status === 'reported' || next.status === 'bye')) {
+        throw new Error('The next match has already been played — cannot revert')
+    }
+    const nextLoser = match.nextLoserMatchId ? findMatch(matches, match.nextLoserMatchId) : null
+    if (nextLoser && (nextLoser.status === 'reported' || nextLoser.status === 'bye')) {
+        throw new Error('The next match has already been played — cannot revert')
+    }
+    if (match.id === 'gf1' && matches.some((m) => m.id === 'gf2')) {
+        throw new Error('Grand Finals has already moved to a bracket reset — cannot revert')
+    }
+
+    const isDoubleElim = matches.some((m) => m.bracketType === 'grand-finals')
+    const wasFinal = isDoubleElim ? match.id === 'gf1' || match.id === 'gf2' : !match.nextMatchId
+
+    match.winnerUid = null
+    match.loserUid = null
+    match.status = 'ready'
+
+    if (next) {
+        next[match.nextMatchSlot === 1 ? 'slot1' : 'slot2'] = null
+        if (next.status === 'ready') next.status = 'pending'
+    }
+    if (nextLoser) {
+        nextLoser[match.nextLoserMatchSlot === 1 ? 'slot1' : 'slot2'] = null
+        if (nextLoser.status === 'ready') nextLoser.status = 'pending'
+    }
+
+    return { matches, wasFinal }
+}
+
 module.exports = {
     isPowerOfTwo,
     nextPowerOfTwo,
     standardSeedOrder,
     generateBracket,
     advanceMatch,
+    revertMatch,
 }

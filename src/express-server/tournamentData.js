@@ -1,7 +1,3 @@
-// Firestore data access for the tournament feature. Kept separate from
-// firebaseCalls.js (which is already large and covers the unrelated user/match
-// domain) so this feature stays a self-contained module — see the tournament
-// feature plan for why that matters here.
 const { getFirestore, FieldValue } = require('firebase-admin/firestore')
 const { randomUUID } = require('crypto')
 const engine = require('./tournamentEngine')
@@ -43,11 +39,6 @@ async function createTournament({ name, description, gameName, format, maxPartic
         format,
         organizerUid,
         maxParticipants: maxParticipants || null,
-        // Planned/advertised date, set by the organizer at creation time — purely
-        // informational. Distinct from `startedAt`, which is the real timestamp
-        // stamped when the tournament actually moves to in_progress. Stored as a
-        // real UTC instant; `timezone` (IANA name) is kept only so viewers can be
-        // shown the organizer's original reference time alongside their own.
         startDate: startDate || null,
         timezone: timezone || null,
         status: 'registration_open',
@@ -133,18 +124,28 @@ function assertOrganizer(tournament, uid) {
     if (tournament.organizerUid !== uid) throw new Error('Only the organizer can do that')
 }
 
-async function generateBracket(tournamentId, organizerUid) {
+function orderParticipants(registrations, seedBy) {
+    const list = registrations.map((r) => ({ uid: r.uid, userName: r.userName, accountElo: r.accountElo }))
+    if (seedBy === 'rating') {
+        list.sort((a, b) => (b.accountElo ?? 1200) - (a.accountElo ?? 1200))
+    }
+    return list.map(({ uid, userName }) => ({ uid, userName }))
+}
+
+async function generateBracket(tournamentId, organizerUid, seedBy = 'registration') {
     const tournamentDocRef = tournamentsRef.doc(tournamentId)
     const tournamentDoc = await tournamentDocRef.get()
     const tournament = tournamentDocData(tournamentDoc)
     assertOrganizer(tournament, organizerUid)
-    if (tournament.status !== 'registration_open') throw new Error(`Cannot generate a bracket from status ${tournament.status}`)
+
+    if (tournament.status !== 'registration_open' && tournament.status !== 'seeding') {
+        throw new Error(`Cannot generate a bracket from status ${tournament.status}`)
+    }
 
     const registrations = await listRegistrations(tournamentId)
     if (registrations.length < 2) throw new Error('At least 2 registered players are required')
 
-    // Default seed order = registration order; organizer can rearrange via assignSlot afterwards.
-    const participants = registrations.map((r) => ({ uid: r.uid, userName: r.userName }))
+    const participants = orderParticipants(registrations, seedBy)
     const { matches } = engine.generateBracket(participants, tournament.format)
 
     const batch = db.batch()
@@ -158,9 +159,6 @@ async function generateBracket(tournamentId, organizerUid) {
     return { matches }
 }
 
-// Synthetic registrants for testing bracket layouts without needing real
-// accounts. Marked isMock so the UI can label them and the organizer can
-// remove them individually via removeRegistration.
 async function addMockRegistrations(tournamentId, count, organizerUid) {
     const tournamentDocRef = tournamentsRef.doc(tournamentId)
     const tournament = await getTournament(tournamentId)
@@ -191,8 +189,6 @@ async function addMockRegistrations(tournamentId, count, organizerUid) {
     return { added: created.length }
 }
 
-// Organizer removal of any registrant (real or mock) while registration is
-// still open — separate from self-withdraw, which only the registrant can do.
 async function removeRegistration(tournamentId, uid, organizerUid) {
     const tournament = await getTournament(tournamentId)
     assertOrganizer(tournament, organizerUid)
@@ -201,10 +197,7 @@ async function removeRegistration(tournamentId, uid, organizerUid) {
     return { removed: true }
 }
 
-// Combined generate-bracket + lock-start in a single step, for organizers who
-// don't need to rearrange seeding first. Also usable from 'seeding' to lock in
-// a bracket that was already generated and manually rearranged via assignSlot.
-async function startTournament(tournamentId, organizerUid) {
+async function startTournament(tournamentId, organizerUid, seedBy = 'registration') {
     const tournamentDocRef = tournamentsRef.doc(tournamentId)
     const tournamentDoc = await tournamentDocRef.get()
     const tournament = tournamentDocData(tournamentDoc)
@@ -216,7 +209,7 @@ async function startTournament(tournamentId, organizerUid) {
     if (tournament.status === 'registration_open') {
         const registrations = await listRegistrations(tournamentId)
         if (registrations.length < 2) throw new Error('At least 2 registered players are required')
-        const participants = registrations.map((r) => ({ uid: r.uid, userName: r.userName }))
+        const participants = orderParticipants(registrations, seedBy)
         const { matches } = engine.generateBracket(participants, tournament.format)
 
         const batch = db.batch()
@@ -237,33 +230,27 @@ async function listMatches(tournamentId) {
     const snapshot = await tournamentsRef.doc(tournamentId).collection('matches').get()
     return snapshot.docs.map((doc) => doc.data())
 }
-
-// "Move players around" — only valid for round-1 slots (the bracket's true
-// leaves) while the tournament is still in the seeding phase, before any
-// match has been played.
 async function assignSlot(tournamentId, matchId, slotNum, uid, organizerUid) {
     const tournamentDocRef = tournamentsRef.doc(tournamentId)
     const tournament = await getTournament(tournamentId)
     assertOrganizer(tournament, organizerUid)
-    if (tournament.status !== 'seeding') throw new Error('Slots can only be rearranged during seeding')
+    if (tournament.status === 'cancelled') throw new Error('Cannot edit a cancelled tournament')
     if (slotNum !== 1 && slotNum !== 2) throw new Error('slotNum must be 1 or 2')
 
     const matchRef = tournamentDocRef.collection('matches').doc(matchId)
     const matchDoc = await matchRef.get()
     if (!matchDoc.exists) throw new Error('Match not found')
     const matchData = matchDoc.data()
-    // Only the bracket's true leaves (winners round 1) are manually assignable —
-    // every other slot is populated automatically via match-result propagation.
+
     if (matchData.bracketType !== 'winners' || matchData.round !== 1) {
         throw new Error('Only winners-bracket round-1 slots can be reassigned')
+    }
+    if (matchData.status === 'reported' || matchData.status === 'bye') {
+        throw new Error('This match has already been played and can no longer be reassigned')
     }
 
     let slotData = { uid: null, userName: null, isBye: true }
     if (uid) {
-        // Look up the name from this tournament's own registrations rather than
-        // the global users collection — mock test registrants (see
-        // addMockRegistrations) don't exist there, and a registrant's snapshot
-        // name at registration time is the correct source of truth here anyway.
         const registrations = await listRegistrations(tournamentId)
         const registration = registrations.find((r) => r.uid === uid)
         if (!registration) throw new Error('User not found')
@@ -342,6 +329,63 @@ async function reportMatchWinner(tournamentId, matchId, winnerUid, organizerUid)
     return result
 }
 
+async function revertMatchWinner(tournamentId, matchId, organizerUid) {
+    const tournamentDocRef = tournamentsRef.doc(tournamentId)
+    const tournament = await getTournament(tournamentId)
+    assertOrganizer(tournament, organizerUid)
+    if (!['in_progress', 'paused', 'completed'].includes(tournament.status)) {
+        throw new Error(`Cannot revert a match while tournament status is ${tournament.status}`)
+    }
+
+    const existingMatches = await listMatches(tournamentId)
+    const { matches, wasFinal } = engine.revertMatch(existingMatches, matchId)
+
+    const batch = db.batch()
+    const matchesRef = tournamentDocRef.collection('matches')
+    for (const match of matches) {
+        batch.set(matchesRef.doc(match.id), match)
+    }
+
+    const uncompleting = wasFinal && tournament.status === 'completed'
+    if (uncompleting) {
+        batch.update(tournamentDocRef, { status: 'in_progress', completedAt: null })
+    }
+    await batch.commit()
+
+    if (uncompleting) {
+        const registrations = await listRegistrations(tournamentId)
+        await Promise.all(
+            registrations.map((r) => historyRef.doc(r.uid).collection('entries').doc(tournamentId).delete())
+        )
+    }
+
+    return { matches, reverted: true }
+}
+
+async function updateTournamentDetails(tournamentId, organizerUid, { name, description, gameName, startDate, timezone, maxParticipants }) {
+    const tournament = await getTournament(tournamentId)
+    assertOrganizer(tournament, organizerUid)
+
+    if (name !== undefined && !name.trim()) throw new Error('name is required')
+    if (maxParticipants !== undefined && maxParticipants !== null) {
+        const registrations = await listRegistrations(tournamentId)
+        if (maxParticipants < registrations.length) {
+            throw new Error('maxParticipants cannot be lower than the current registration count')
+        }
+    }
+
+    if (startDate !== undefined && startDate && tournament.status === 'registration_open') {
+        if (new Date(startDate).getTime() < Date.now()) throw new Error('startDate must be in the future')
+    }
+
+    const fields = { name, description, gameName, startDate, timezone, maxParticipants }
+    const updates = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined))
+    if (Object.keys(updates).length === 0) return { updated: false }
+
+    await tournamentsRef.doc(tournamentId).update(updates)
+    return { updated: true }
+}
+
 async function getPlayerTournamentHistory(uid, limit = 10, cursorId = null) {
     const pageSize = Math.min(Number(limit) || 10, 50)
     let query = historyRef.doc(uid).collection('entries').orderBy('completedAt', 'desc').limit(pageSize)
@@ -372,5 +416,7 @@ module.exports = {
     resumeTournament,
     cancelTournament,
     reportMatchWinner,
+    revertMatchWinner,
+    updateTournamentDetails,
     getPlayerTournamentHistory,
 }
