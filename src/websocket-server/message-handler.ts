@@ -26,6 +26,12 @@ const HOLEPUNCH_PORT = Number(serverInfo.PUNCH_PORT ?? 33334);
 const HOLEPUNCH_HOST = serverInfo.COTURN_IP ?? '127.0.0.1';
 const holePunchSocket = dgram.createSocket('udp4');
 holePunchSocket.unref();
+// Spectate relay (src/util-servers/spectate-relay/main.go) — separate service, separate ports.
+// This server never talks to it directly; it only hands out its address so a spectator's
+// client can connect on its own (mirrors how match-start hands out HOLEPUNCH_HOST/PORT).
+const SPECTATE_RELAY_HOST = serverInfo.SPECTATE_RELAY_HOST ?? HOLEPUNCH_HOST;
+const SPECTATE_RELAY_UDP_PORT = Number(serverInfo.SPECTATE_RELAY_UDP_PORT ?? 33335);
+const SPECTATE_RELAY_TCP_PORT = Number(serverInfo.SPECTATE_RELAY_TCP_PORT ?? 33336);
 const DEFAULT_RPS_ELO = 1200;
 const RPS_INVITE_WINDOW_MS = 30_000;
 const RPS_CHOICE_WINDOW_MS = 10_000;
@@ -236,6 +242,9 @@ export async function handleMessage(ctx: MessageContext, message: SignalMessage)
             break;
         case 'request-match':
             await handleRequestMatch(ctx, message);
+            break;
+        case 'spectate-request':
+            handleSpectateRequest(ctx, message);
             break;
         case 'userDisconnect': {
             const disconnectedUid = message.userUID ?? ctx.ws.uid;
@@ -673,6 +682,47 @@ async function handleRequestMatch(
     broadcastUserListForUser(challengerId);
     broadcastUserListForUser(opponentId);
     broadcastMatchListSnapshot(ctx.wss);
+}
+
+// Discovery + handoff only — this server never touches spectator traffic itself. It looks up
+// the requested match, resolves its playerSlot-0 player as the publisher (see plan: publisher
+// is always slot 0), and replies with enough info for the spectator's own client to connect to
+// the relay directly. If anything doesn't resolve, reply with a reason so the UI can show why.
+function handleSpectateRequest(
+    ctx: MessageContext,
+    message: Extract<SignalMessage, { type: 'spectate-request' }>
+) {
+    const { matchId } = message;
+    if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN) return;
+
+    const reply = (payload: Record<string, unknown>) => {
+        ctx.ws.send(JSON.stringify({ type: 'spectate-info', matchId, ...payload }));
+    };
+
+    if (!matchId) {
+        reply({ ok: false, reason: 'missing matchId' });
+        return;
+    }
+
+    const match = activeMatches.get(matchId);
+    if (!match) {
+        reply({ ok: false, reason: 'match not found' });
+        return;
+    }
+
+    const publisher = match.players.find((p) => p.playerSlot === 0);
+    if (!publisher) {
+        reply({ ok: false, reason: 'match has no publisher yet' });
+        return;
+    }
+
+    reply({
+        ok: true,
+        publisherUid: publisher.uid,
+        relayHost: SPECTATE_RELAY_HOST,
+        relayUdpPort: SPECTATE_RELAY_UDP_PORT,
+        relayTcpPort: SPECTATE_RELAY_TCP_PORT,
+    });
 }
 
 async function handleSendMessage(sender: SocketUser | undefined, message: string, messageId?: string) {

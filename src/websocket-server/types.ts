@@ -153,7 +153,8 @@ export type SignalMessage =
     | { type: 'rank-queue-decline'; matchId: string; uid: string }
     | { type: 'tournament-subscribe'; tournamentId: string; uid: string }
     | { type: 'tournament-unsubscribe'; tournamentId: string; uid: string }
-    | { type: 'tournament-changed'; tournamentId: string; uid: string };
+    | { type: 'tournament-changed'; tournamentId: string; uid: string }
+    | { type: 'spectate-request'; matchId: string; uid: string };
 
 export type RankQueueEntry = {
     uid: string

@@ -7,6 +7,7 @@
     "express": "node src/express-server/v2Express.js",
     "sockets": "npx ts-node src/websocket-server/server.ts",
     "holepuncher": "go run src/util-servers/holepunch/gopunchv1.go",
+    "spectate-relay": "go run src/util-servers/spectate-relay/main.go",
     "test": "npx ts-node src/tests/match-flow-test.ts",
     "test:signal": "npx ts-node src/tests/match-flow-test.ts --skip-emu --skip-punch",
     "test:punch": "npx ts-node src/tests/match-flow-test.ts --skip-emu",
