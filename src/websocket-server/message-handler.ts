@@ -715,6 +715,7 @@ function handleSpectateRequest(
         reply({ ok: false, reason: 'match has no publisher yet' });
         return;
     }
+    const opponent = match.players.find((p) => p.playerSlot === 1);
 
     reply({
         ok: true,
@@ -722,6 +723,11 @@ function handleSpectateRequest(
         relayHost: SPECTATE_RELAY_HOST,
         relayUdpPort: SPECTATE_RELAY_UDP_PORT,
         relayTcpPort: SPECTATE_RELAY_TCP_PORT,
+        // Display names for the overlay's "who's playing" text (see InitSpectatorConnection in
+        // fbn_spectate.cpp) -- the spectate-relay itself never sees these, since it only ever
+        // moves opaque confirmed-input bytes, not match metadata.
+        player1Name: publisher.userName ?? '',
+        player2Name: opponent?.userName ?? '',
     });
 }
 
