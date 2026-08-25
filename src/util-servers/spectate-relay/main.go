@@ -65,15 +65,20 @@ package main
 //     (no payload)
 //
 //     The publisher responds on the same connection with:
-//       {"cmd":"snapshot-response","requestId":"...","frame":12345,"payloadSize":N}
-//     immediately followed by N raw bytes (the state blob — NOT
-//     base64'd, this is why TCP framing carries a raw payload instead of
-//     JSON-embedding it).
+//       {"cmd":"snapshot-response","requestId":"...","frame":12345,"liveFrame":12365,"payloadSize":N}
+//     immediately followed by N raw bytes: the state blob (tagged "frame")
+//     followed by a backfill of confirmed-input entries for every frame up
+//     to "liveFrame" -- NOT base64'd, this is why TCP framing carries a raw
+//     payload instead of JSON-embedding it. The relay never inspects this
+//     payload, just forwards it verbatim; see fbn_spectate.cpp's
+//     SpectatePublishServiceIncoming/ApplySnapshotAndBackfill for why the
+//     backfill exists (the snapshot itself is deliberately stale by the
+//     time it's served, so liveFrame can be well past frame).
 //
 //     Spectator, on connect, sends:
 //       {"role":"spectator","matchId":"..."}
 //     and then reads exactly one of:
-//       {"cmd":"snapshot-response","frame":12345,"payloadSize":N} + N bytes
+//       {"cmd":"snapshot-response","frame":12345,"liveFrame":12365,"payloadSize":N} + N bytes
 //     or
 //       {"cmd":"error","reason":"..."}
 //     On success, the connection is NOT closed afterward -- the relay keeps
@@ -371,11 +376,16 @@ type tcpHeader struct {
 	MatchID   string `json:"matchId,omitempty"`
 	Cmd       string `json:"cmd,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
-	// No omitempty on Frame/PayloadSize: both can legitimately be 0 (the very first frame of a
-	// match), and omitempty would silently drop the key in that case instead of sending an
-	// explicit 0, which a reader like fbn_spectate.cpp's JsonExtractLong can't tell apart from
+	// No omitempty on Frame/LiveFrame/PayloadSize: all three can legitimately be 0 (the very first
+	// frame of a match), and omitempty would silently drop the key in that case instead of sending
+	// an explicit 0, which a reader like fbn_spectate.cpp's JsonExtractLong can't tell apart from
 	// "no packet was even parseable".
-	Frame       int64  `json:"frame"`
+	Frame int64 `json:"frame"`
+	// The last frame number included in a snapshot-response's backfill (see fbn_spectate.cpp's
+	// SpectatePublishServiceIncoming) -- equal to Frame when there was nothing to backfill. Lets
+	// the spectator know exactly which live frame to expect next, regardless of how stale Frame
+	// itself was when the snapshot was captured.
+	LiveFrame   int64  `json:"liveFrame"`
 	PayloadSize int    `json:"payloadSize"`
 	Reason      string `json:"reason,omitempty"`
 	// Data carries a "frame" push's tiny (14-byte) confirmed-input blob inline as base64 -- no
@@ -602,6 +612,7 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 			_ = pending.spec.send(tcpHeader{
 				Cmd:         "snapshot-response",
 				Frame:       header.Frame,
+				LiveFrame:   header.LiveFrame,
 				PayloadSize: header.PayloadSize,
 			}, payload)
 			close(pending.done)
