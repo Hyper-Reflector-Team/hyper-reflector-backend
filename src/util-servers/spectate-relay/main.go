@@ -68,6 +68,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,11 @@ var (
 	udpMu       sync.Mutex
 	publishers  = make(map[string]udpRegistration)            // matchId -> publisher
 	subscribers = make(map[string]map[string]udpRegistration) // matchId -> uid -> subscriber
+
+	// Debug aid for the "frame" anti-spoof check below -- logs only the first rejection per
+	// distinct (matchId, rejecting address) pair so a genuinely misbehaving/NAT-drifted sender
+	// doesn't spam the log at frame rate, while still surfacing the very first occurrence.
+	loggedFrameRejections = make(map[string]bool)
 )
 
 type udpEnvelope struct {
@@ -187,13 +193,22 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 			return
 		}
 		udpMu.Lock()
+		_, alreadyPublishing := publishers[msg.MatchID]
 		publishers[msg.MatchID] = udpRegistration{addr: remote, uid: msg.UID, lastSeen: time.Now()}
 		udpMu.Unlock()
+		if !alreadyPublishing {
+			log.Printf("spectate-relay: UDP publisher registered for match %s from %s\n", msg.MatchID, remote.String())
+		}
 
 	case "unpublish":
 		udpMu.Lock()
 		delete(publishers, msg.MatchID)
 		delete(subscribers, msg.MatchID)
+		for key := range loggedFrameRejections {
+			if strings.HasPrefix(key, msg.MatchID+"|") {
+				delete(loggedFrameRejections, key)
+			}
+		}
 		udpMu.Unlock()
 
 	case "watch":
@@ -211,6 +226,7 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		// Only broadcast on an actual join, not the periodic keepalive re-registration
 		// (see SPECTATE_REGISTER_INTERVAL_MS in fbn_spectate.cpp) that keeps this from expiring.
 		if !alreadyWatching {
+			log.Printf("spectate-relay: UDP watcher %s registered for match %s from %s\n", msg.UID, msg.MatchID, remote.String())
 			broadcastSpectatorCount(conn, msg.MatchID)
 		}
 
@@ -236,7 +252,17 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		// Only relay frames from the currently-registered publisher's address,
 		// so a stale/duplicate publisher can't inject data into someone else's match.
 		if !ok || pub.addr.String() != remote.String() {
+			rejectKey := msg.MatchID + "|" + remote.String()
+			alreadyLogged := loggedFrameRejections[rejectKey]
+			loggedFrameRejections[rejectKey] = true
 			udpMu.Unlock()
+			if !alreadyLogged {
+				if !ok {
+					log.Printf("spectate-relay: dropped 'frame' for match %s from %s -- no publisher registered\n", msg.MatchID, remote.String())
+				} else {
+					log.Printf("spectate-relay: dropped 'frame' for match %s from %s -- registered publisher is %s\n", msg.MatchID, remote.String(), pub.addr.String())
+				}
+			}
 			return
 		}
 		pub.lastSeen = time.Now()
