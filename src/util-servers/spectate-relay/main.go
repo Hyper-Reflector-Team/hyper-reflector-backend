@@ -393,6 +393,27 @@ var (
 	loggedFirstFrameRelayed = make(map[string]bool)
 )
 
+// maxSpectatorConnsPerIP caps concurrent spectator connections from a single source address --
+// abuse/resource-exhaustion mitigation (one greedy or malicious client opening many connections),
+// not protection against a real distributed attack across many IPs, which needs infra-level
+// defenses (a firewall, a CDN/proxy) this relay can't provide on its own. Rejecting over the limit
+// happens BEFORE any publisher round-trip (see handleSpectatorConn), so an abusive client can't
+// also hammer the publisher with snapshot-request traffic.
+const maxSpectatorConnsPerIP = 4
+
+var (
+	ipConnMu           sync.Mutex
+	spectatorConnsByIP = make(map[string]int) // remote IP (no port) -> concurrent spectator connection count
+)
+
+func remoteIP(conn net.Conn) string {
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return conn.RemoteAddr().String()
+	}
+	return host
+}
+
 func writeFramed(w io.Writer, header tcpHeader, payload []byte) error {
 	headerBytes, err := json.Marshal(header)
 	if err != nil {
@@ -588,6 +609,30 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 
 func handleSpectatorConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 	sw := &tcpWriter{conn: conn, w: bufio.NewWriter(conn)}
+	ip := remoteIP(conn)
+
+	ipConnMu.Lock()
+	if spectatorConnsByIP[ip] >= maxSpectatorConnsPerIP {
+		ipConnMu.Unlock()
+		log.Printf("spectate-relay: rejecting spectator from %s -- already at the %d-connection limit\n", ip, maxSpectatorConnsPerIP)
+		_ = sw.send(tcpHeader{Cmd: "error", Reason: "too many spectator connections from this address"}, nil)
+		conn.Close()
+		return
+	}
+	spectatorConnsByIP[ip]++
+	ipConnMu.Unlock()
+
+	// Runs on every exit path (each early return below, and eventually when the long-lived live
+	// feed connection closes), unlike a defer registered further down that would miss the early
+	// returns.
+	defer func() {
+		ipConnMu.Lock()
+		spectatorConnsByIP[ip]--
+		if spectatorConnsByIP[ip] <= 0 {
+			delete(spectatorConnsByIP, ip)
+		}
+		ipConnMu.Unlock()
+	}()
 
 	if matchId == "" {
 		_ = sw.send(tcpHeader{Cmd: "error", Reason: "missing matchId"}, nil)
