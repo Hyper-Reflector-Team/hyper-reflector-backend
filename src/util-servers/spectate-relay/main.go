@@ -5,10 +5,23 @@ package main
 // (always the playerSlot-0 client, see websocket-server's spectate-request
 // handler) to that match's subscribers.
 //
+// The live per-frame confirmed-input feed rides TCP, not UDP -- unlike GGPO's
+// own P2P input packets (which tolerate loss because every packet carries
+// several recent frames and rollback can correct a late/wrong prediction), a
+// spectator feed carries only already-confirmed data with nothing analogous
+// to rollback on the receiving end. A single dropped UDP "frame" packet used
+// to strand a spectator forever waiting on a frame number that would never
+// be resent. TCP's own reliable, ordered delivery makes that whole class of
+// bug impossible by construction (see Project Slippi's spectator protocol
+// for prior art: it makes the same choice, over ENet's reliable channel,
+// specifically to avoid needing any catch-up/gap-recovery machinery).
+//
 // Two transports:
 //
-//   - UDP (SPECTATE_UDP_PORT): the live per-frame confirmed-input feed.
-//     Every packet is a single JSON object with a "type" field:
+//   - UDP (SPECTATE_UDP_PORT): presence and chat, both fine to lose
+//     occasionally since they're self-correcting (heartbeats resend
+//     periodically; a missed spectator-count update is overwritten by the
+//     next change). Every packet is a single JSON object with a "type":
 //
 //     {"type":"publish","matchId":"...","uid":"..."}
 //     Registers/refreshes the sender as matchId's publisher. Must be
@@ -19,28 +32,33 @@ package main
 //
 //     {"type":"watch","matchId":"...","uid":"..."}
 //     Registers/refreshes the sender as a subscriber of matchId. Must be
-//     resent periodically (see watcherTimeout) to stay registered.
+//     resent periodically (see watcherTimeout) to stay registered. Purely
+//     for presence/spectator-count purposes now -- the live frame feed
+//     itself flows over each spectator's TCP connection instead (below).
 //
 //     {"type":"unwatch","matchId":"...","uid":"..."}
 //     Explicit stop.
 //
-//     {"type":"frame","matchId":"...","frame":12345,"data":"<base64>"}
-//     Sent by a registered publisher. Relayed byte-for-byte (same JSON,
-//     just re-marshaled) to every registered subscriber of matchId. The
-//     "data" payload is opaque to the relay — it's whatever the FBNeo
-//     client's publisher path put there.
+//     {"type":"chat","matchId":"...","uid":"...","userName":"...","text":"..."}
+//     Spectator-only chat; fanned out to this match's other watchers.
 //
-//   - TCP (SPECTATE_TCP_PORT): the one-shot state-snapshot handoff for
-//     mid-match join. A publisher holds ONE persistent connection per
-//     match; many spectators can each request a snapshot against it
-//     without needing their own publisher connection. Every message on
-//     either side of this protocol is:
+//   - TCP (SPECTATE_TCP_PORT): the state-snapshot handoff for mid-match
+//     join, AND (unlike the old design) the ongoing live frame feed itself.
+//     A publisher holds ONE persistent connection per match; a spectator
+//     also keeps its connection open for the match's duration once
+//     connected, rather than closing it after the initial snapshot. Every
+//     message on either side of this protocol is:
 //
 //     [4-byte big-endian header length][header JSON bytes][optional payload]
 //
 //     Publisher, on connect, sends:
 //       {"role":"publisher","matchId":"..."}
-//     and then just keeps the connection open, reading further headers.
+//     and then keeps the connection open, both reading further headers
+//     (snapshot-request, below) and proactively pushing:
+//       {"cmd":"frame","frame":12345,"data":"<base64>"}
+//     for every confirmed frame once it's old enough to be safe to reveal
+//     (see fbn_spectate.cpp's SpectatePublishTick) -- no payload, the "data"
+//     field carries the tiny (14-byte) confirmed-input blob inline.
 //
 //     The relay pushes, whenever a spectator asks:
 //       {"cmd":"snapshot-request","requestId":"..."}
@@ -54,11 +72,14 @@ package main
 //
 //     Spectator, on connect, sends:
 //       {"role":"spectator","matchId":"..."}
-//     and then reads exactly one response back from the relay: either
+//     and then reads exactly one of:
 //       {"cmd":"snapshot-response","frame":12345,"payloadSize":N} + N bytes
 //     or
 //       {"cmd":"error","reason":"..."}
-//     after which the relay closes the connection.
+//     On success, the connection is NOT closed afterward -- the relay keeps
+//     it open and streams every subsequent {"cmd":"frame",...} push from the
+//     publisher down it, in the exact order the publisher sent them (TCP
+//     guarantees this), until either side disconnects.
 
 import (
 	"bufio"
@@ -68,7 +89,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -89,7 +109,7 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// UDP: live frame fan-out
+// UDP: presence (publish/watch keepalive, spectator-count) and chat
 // ---------------------------------------------------------------------------
 
 type udpRegistration struct {
@@ -102,29 +122,18 @@ var (
 	udpMu       sync.Mutex
 	publishers  = make(map[string]udpRegistration)            // matchId -> publisher
 	subscribers = make(map[string]map[string]udpRegistration) // matchId -> uid -> subscriber
-
-	// Debug aid for the "frame" anti-spoof check below -- logs only the first rejection per
-	// distinct (matchId, rejecting address) pair so a genuinely misbehaving/NAT-drifted sender
-	// doesn't spam the log at frame rate, while still surfacing the very first occurrence.
-	loggedFrameRejections = make(map[string]bool)
-	// Debug aid: logs only the first successfully-relayed frame per match, so "frames are
-	// flowing at all" is visible in the log without spamming it at frame rate.
-	loggedFirstFrameRelayed = make(map[string]bool)
 )
 
 type udpEnvelope struct {
-	Type    string `json:"type"`
-	MatchID string `json:"matchId"`
-	UID     string `json:"uid,omitempty"`
-	// Frame and Count deliberately have no omitempty: 0 is a meaningful value for both (the
-	// very first frame of a match; the last spectator leaving), and omitempty on a numeric
-	// field drops the key entirely when its value is the zero value, which a reader like
-	// fbn_spectate.cpp's JsonExtractLong can't tell apart from "no packet was even parseable".
-	Frame    int64  `json:"frame"`
-	Data     string `json:"data,omitempty"`
+	Type     string `json:"type"`
+	MatchID  string `json:"matchId"`
+	UID      string `json:"uid,omitempty"`
 	UserName string `json:"userName,omitempty"`
 	Text     string `json:"text,omitempty"`
-	Count    int    `json:"count"`
+	// Count deliberately has no omitempty: 0 is meaningful (the last spectator leaving), and
+	// omitempty on a numeric field drops the key entirely at its zero value, which a reader like
+	// fbn_spectate.cpp's JsonExtractLong can't tell apart from "no packet was even parseable".
+	Count int `json:"count"`
 }
 
 // Sent to a match's publisher and all of its watchers whenever the watcher set changes size
@@ -211,12 +220,6 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		udpMu.Lock()
 		delete(publishers, msg.MatchID)
 		delete(subscribers, msg.MatchID)
-		for key := range loggedFrameRejections {
-			if strings.HasPrefix(key, msg.MatchID+"|") {
-				delete(loggedFrameRejections, key)
-			}
-		}
-		delete(loggedFirstFrameRelayed, msg.MatchID)
 		udpMu.Unlock()
 
 	case "watch":
@@ -254,62 +257,11 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 			broadcastSpectatorCount(conn, msg.MatchID)
 		}
 
-	case "frame":
-		udpMu.Lock()
-		pub, ok := publishers[msg.MatchID]
-		// Only relay frames from the currently-registered publisher's address,
-		// so a stale/duplicate publisher can't inject data into someone else's match.
-		if !ok || pub.addr.String() != remote.String() {
-			rejectKey := msg.MatchID + "|" + remote.String()
-			alreadyLogged := loggedFrameRejections[rejectKey]
-			loggedFrameRejections[rejectKey] = true
-			udpMu.Unlock()
-			if !alreadyLogged {
-				if !ok {
-					log.Printf("spectate-relay: dropped 'frame' for match %s from %s -- no publisher registered\n", msg.MatchID, remote.String())
-				} else {
-					log.Printf("spectate-relay: dropped 'frame' for match %s from %s -- registered publisher is %s\n", msg.MatchID, remote.String(), pub.addr.String())
-				}
-			}
-			return
-		}
-		pub.lastSeen = time.Now()
-		publishers[msg.MatchID] = pub
-
-		var targets []udpRegistration
-		if watchers, ok := subscribers[msg.MatchID]; ok {
-			for _, w := range watchers {
-				targets = append(targets, w)
-			}
-		}
-		udpMu.Unlock()
-
-		if len(targets) == 0 {
-			return
-		}
-
-		udpMu.Lock()
-		alreadyLoggedFrame := loggedFirstFrameRelayed[msg.MatchID]
-		loggedFirstFrameRelayed[msg.MatchID] = true
-		udpMu.Unlock()
-		if !alreadyLoggedFrame {
-			log.Printf("spectate-relay: relaying frame %d for match %s to %d watcher(s)\n", msg.Frame, msg.MatchID, len(targets))
-		}
-
-		out, err := json.Marshal(msg)
-		if err != nil {
-			return
-		}
-		for _, t := range targets {
-			_, _ = conn.WriteToUDP(out, t.addr)
-		}
-
 	case "chat":
 		// Spectator-only chat: fans out to this match's other watchers and nothing else --
 		// never touches the publishers map, so it can never reach the players. Sender must be
-		// a currently-registered watcher of this match (same anti-spoofing check as "frame"
-		// above, just against the subscribers map instead of publishers) so a stranger can't
-		// inject chat into a match they never joined as a spectator.
+		// a currently-registered watcher of this match so a stranger can't inject chat into a
+		// match they never joined as a spectator.
 		udpMu.Lock()
 		watchers, ok := subscribers[msg.MatchID]
 		if !ok {
@@ -383,7 +335,7 @@ func pruneStaleUDP(conn *net.UDPConn) {
 }
 
 // ---------------------------------------------------------------------------
-// TCP: snapshot handoff for mid-match join
+// TCP: snapshot handoff for mid-match join, and the live frame feed
 // ---------------------------------------------------------------------------
 
 type tcpHeader struct {
@@ -392,28 +344,53 @@ type tcpHeader struct {
 	Cmd       string `json:"cmd,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
 	// No omitempty on Frame/PayloadSize: both can legitimately be 0 (the very first frame of a
-	// match; see the matching note on udpEnvelope.Frame above), and omitempty would silently
-	// drop the key in that case instead of sending an explicit 0.
+	// match), and omitempty would silently drop the key in that case instead of sending an
+	// explicit 0, which a reader like fbn_spectate.cpp's JsonExtractLong can't tell apart from
+	// "no packet was even parseable".
 	Frame       int64  `json:"frame"`
 	PayloadSize int    `json:"payloadSize"`
 	Reason      string `json:"reason,omitempty"`
+	// Data carries a "frame" push's tiny (14-byte) confirmed-input blob inline as base64 -- no
+	// separate raw payload needed for something this small (contrast the snapshot's payload,
+	// which can be sizeable and rides the raw-bytes-after-header form instead).
+	Data string `json:"data,omitempty"`
 }
 
-type publisherConn struct {
+// A persistent TCP connection this relay writes to, possibly from multiple goroutines: a
+// publisher's snapshot responses come from its own read loop, but the live frame feed (pushed by
+// the publisher, fanned out to every watcher) and new-watcher registration can all be happening
+// concurrently. send() serializes writes to a given connection and can be called from any
+// goroutine.
+type tcpWriter struct {
 	conn net.Conn
 	w    *bufio.Writer
-	mu   sync.Mutex // guards writes to conn, since requests can arrive concurrently
+	mu   sync.Mutex
+}
+
+func (t *tcpWriter) send(header tcpHeader, payload []byte) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := writeFramed(t.w, header, payload); err != nil {
+		return err
+	}
+	return t.w.Flush()
 }
 
 type pendingSnapshot struct {
-	specConn net.Conn
-	done     chan struct{}
+	spec *tcpWriter
+	done chan struct{}
 }
 
 var (
 	tcpMu             sync.Mutex
-	matchPublisherTCP = make(map[string]*publisherConn) // matchId -> its publisher's persistent conn
+	matchPublisherTCP = make(map[string]*tcpWriter)          // matchId -> its publisher's persistent conn
+	matchWatchersTCP  = make(map[string]map[*tcpWriter]bool) // matchId -> set of connected spectators' persistent conns
 	pendingByRequest  = make(map[string]*pendingSnapshot)
+
+	// Debug aid: logs only the first successfully-relayed frame per match, so "frames are
+	// flowing at all" is visible in the log without spamming it at frame rate. Guarded by tcpMu
+	// since the live feed now flows entirely over TCP.
+	loggedFirstFrameRelayed = make(map[string]bool)
 )
 
 func writeFramed(w io.Writer, header tcpHeader, payload []byte) error {
@@ -493,7 +470,7 @@ func handleTCPConn(conn net.Conn) {
 	case "publisher":
 		handlePublisherConn(conn, reader, header.MatchID)
 	case "spectator":
-		handleSpectatorConn(conn, header.MatchID)
+		handleSpectatorConn(conn, reader, header.MatchID)
 	default:
 		conn.Close()
 	}
@@ -505,7 +482,7 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 		return
 	}
 
-	pc := &publisherConn{conn: conn, w: bufio.NewWriter(conn)}
+	pc := &tcpWriter{conn: conn, w: bufio.NewWriter(conn)}
 
 	tcpMu.Lock()
 	matchPublisherTCP[matchId] = pc
@@ -516,7 +493,16 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 		if matchPublisherTCP[matchId] == pc {
 			delete(matchPublisherTCP, matchId)
 		}
+		// The live feed ends with the publisher -- tell this match's watchers and drop them
+		// rather than leaving their connections open with nothing left to stream.
+		watchers := matchWatchersTCP[matchId]
+		delete(matchWatchersTCP, matchId)
+		delete(loggedFirstFrameRelayed, matchId)
 		tcpMu.Unlock()
+		for w := range watchers {
+			_ = w.send(tcpHeader{Cmd: "publisher-disconnected"}, nil)
+			w.conn.Close()
+		}
 		conn.Close()
 	}()
 
@@ -529,46 +515,83 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 			return
 		}
 
-		if header.Cmd != "snapshot-response" {
-			continue
-		}
-		if header.PayloadSize < 0 || header.PayloadSize > maxSnapshotPayload {
-			log.Printf("spectate-relay: publisher for match %s sent bad payloadSize %d\n", matchId, header.PayloadSize)
-			return
-		}
-		payload := make([]byte, header.PayloadSize)
-		if _, err := io.ReadFull(reader, payload); err != nil {
-			log.Printf("spectate-relay: failed reading snapshot payload for match %s: %v\n", matchId, err)
-			return
-		}
+		switch header.Cmd {
+		case "snapshot-response":
+			if header.PayloadSize < 0 || header.PayloadSize > maxSnapshotPayload {
+				log.Printf("spectate-relay: publisher for match %s sent bad payloadSize %d\n", matchId, header.PayloadSize)
+				return
+			}
+			payload := make([]byte, header.PayloadSize)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				log.Printf("spectate-relay: failed reading snapshot payload for match %s: %v\n", matchId, err)
+				return
+			}
 
-		tcpMu.Lock()
-		pending, ok := pendingByRequest[header.RequestID]
-		if ok {
-			delete(pendingByRequest, header.RequestID)
-		}
-		tcpMu.Unlock()
+			tcpMu.Lock()
+			pending, ok := pendingByRequest[header.RequestID]
+			if ok {
+				delete(pendingByRequest, header.RequestID)
+			}
+			tcpMu.Unlock()
 
-		if !ok {
-			// Late/duplicate response for a request that already timed out. Drop it.
-			continue
-		}
+			if !ok {
+				// Late/duplicate response for a request that already timed out. Drop it.
+				continue
+			}
 
-		_ = writeFramed(pending.specConn, tcpHeader{
-			Cmd:         "snapshot-response",
-			Frame:       header.Frame,
-			PayloadSize: header.PayloadSize,
-		}, payload)
-		pending.specConn.Close()
-		close(pending.done)
+			_ = pending.spec.send(tcpHeader{
+				Cmd:         "snapshot-response",
+				Frame:       header.Frame,
+				PayloadSize: header.PayloadSize,
+			}, payload)
+			close(pending.done)
+			// pending.spec's connection is deliberately NOT closed here -- it stays open and
+			// registers as a live watcher right after this (see handleSpectatorConn), unlike the
+			// old one-shot-then-close design.
+
+		case "frame":
+			// The confirmed-input live feed, pushed unprompted by the publisher for every frame
+			// once it's old enough to be safe to reveal (see fbn_spectate.cpp's
+			// SpectatePublishTick). Fan out to every currently-connected watcher's persistent TCP
+			// connection -- delivery here is exactly as reliable as this connection itself, so
+			// unlike the old UDP feed, no redundancy or gap-recovery is needed on either end.
+			tcpMu.Lock()
+			var targets []*tcpWriter
+			for w := range matchWatchersTCP[matchId] {
+				targets = append(targets, w)
+			}
+			alreadyLogged := loggedFirstFrameRelayed[matchId]
+			loggedFirstFrameRelayed[matchId] = true
+			tcpMu.Unlock()
+
+			if !alreadyLogged {
+				log.Printf("spectate-relay: relaying frame %d for match %s to %d watcher(s) over TCP\n", header.Frame, matchId, len(targets))
+			}
+
+			out := tcpHeader{Cmd: "frame", Frame: header.Frame, Data: header.Data}
+			for _, w := range targets {
+				if err := w.send(out, nil); err != nil {
+					// A slow/dead watcher shouldn't block or drop frames for everyone else --
+					// just deregister it; its own read loop in handleSpectatorConn notices the
+					// connection is dead and closes it there.
+					tcpMu.Lock()
+					delete(matchWatchersTCP[matchId], w)
+					tcpMu.Unlock()
+				}
+			}
+
+		default:
+			// Unknown/unused cmd on this connection -- ignore for forward-compatibility.
+		}
 	}
 }
 
-func handleSpectatorConn(conn net.Conn, matchId string) {
-	defer conn.Close()
+func handleSpectatorConn(conn net.Conn, reader *bufio.Reader, matchId string) {
+	sw := &tcpWriter{conn: conn, w: bufio.NewWriter(conn)}
 
 	if matchId == "" {
-		_ = writeFramed(conn, tcpHeader{Cmd: "error", Reason: "missing matchId"}, nil)
+		_ = sw.send(tcpHeader{Cmd: "error", Reason: "missing matchId"}, nil)
+		conn.Close()
 		return
 	}
 
@@ -577,40 +600,66 @@ func handleSpectatorConn(conn net.Conn, matchId string) {
 	tcpMu.Unlock()
 
 	if !ok {
-		_ = writeFramed(conn, tcpHeader{Cmd: "error", Reason: "no publisher for match"}, nil)
+		_ = sw.send(tcpHeader{Cmd: "error", Reason: "no publisher for match"}, nil)
+		conn.Close()
 		return
 	}
 
 	requestId := uuid.New().String()
-	pending := &pendingSnapshot{specConn: conn, done: make(chan struct{})}
+	pending := &pendingSnapshot{spec: sw, done: make(chan struct{})}
 
 	tcpMu.Lock()
 	pendingByRequest[requestId] = pending
 	tcpMu.Unlock()
 
-	pc.mu.Lock()
-	err := writeFramed(pc.w, tcpHeader{Cmd: "snapshot-request", RequestID: requestId}, nil)
-	if err == nil {
-		err = pc.w.Flush()
-	}
-	pc.mu.Unlock()
-
-	if err != nil {
+	if err := pc.send(tcpHeader{Cmd: "snapshot-request", RequestID: requestId}, nil); err != nil {
 		tcpMu.Lock()
 		delete(pendingByRequest, requestId)
 		tcpMu.Unlock()
-		_ = writeFramed(conn, tcpHeader{Cmd: "error", Reason: "publisher unreachable"}, nil)
+		_ = sw.send(tcpHeader{Cmd: "error", Reason: "publisher unreachable"}, nil)
+		conn.Close()
 		return
 	}
 
 	select {
 	case <-pending.done:
-		// handlePublisherConn already wrote the response and closed conn.
+		// handlePublisherConn already sent the snapshot-response above.
 	case <-time.After(snapshotRequestTimeout):
 		tcpMu.Lock()
 		delete(pendingByRequest, requestId)
 		tcpMu.Unlock()
-		_ = writeFramed(conn, tcpHeader{Cmd: "error", Reason: "snapshot request timed out"}, nil)
+		_ = sw.send(tcpHeader{Cmd: "error", Reason: "snapshot request timed out"}, nil)
+		conn.Close()
+		return
+	}
+
+	// Snapshot delivered -- register as a live watcher and keep this connection open for the
+	// match's duration instead of closing it (see the "frame" case in handlePublisherConn, which
+	// only starts fanning frames out to this connection from this point forward; registering any
+	// earlier would risk a frame push racing ahead of the snapshot-response on the wire).
+	tcpMu.Lock()
+	if matchWatchersTCP[matchId] == nil {
+		matchWatchersTCP[matchId] = make(map[*tcpWriter]bool)
+	}
+	matchWatchersTCP[matchId][sw] = true
+	tcpMu.Unlock()
+	log.Printf("spectate-relay: spectator connected for match %s, watching live feed over TCP\n", matchId)
+
+	defer func() {
+		tcpMu.Lock()
+		delete(matchWatchersTCP[matchId], sw)
+		tcpMu.Unlock()
+		conn.Close()
+	}()
+
+	// Nothing meaningful is expected FROM the spectator on this connection -- it's a one-way live
+	// feed. Keep reading (and discarding) so a closed/dead connection is noticed promptly instead
+	// of leaking a registration until the match ends.
+	discard := make([]byte, 256)
+	for {
+		if _, err := reader.Read(discard); err != nil {
+			return
+		}
 	}
 }
 
