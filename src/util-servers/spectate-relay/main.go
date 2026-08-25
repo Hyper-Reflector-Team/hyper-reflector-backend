@@ -99,8 +99,14 @@ const (
 	SPECTATE_UDP_PORT = 33335
 	SPECTATE_TCP_PORT = 33336
 
-	publisherTimeout = 15 * time.Second
-	watcherTimeout   = 15 * time.Second
+	// Generous relative to the 5s keepalive interval (SPECTATE_REGISTER_INTERVAL_MS in
+	// fbn_spectate.cpp) on purpose: a spectator connecting to a slow-to-load system (CPS3's ROM
+	// decompression/decryption can run well past a normal keepalive cadence) sits in one long,
+	// synchronous, network-silent call between fetching its snapshot and ever sending another
+	// "watch" packet. A short timeout here prunes that spectator as "gone" mid-load, which
+	// broadcasts a false departure to the match's real players even though nothing left.
+	publisherTimeout = 60 * time.Second
+	watcherTimeout   = 60 * time.Second
 	pruneInterval    = 5 * time.Second
 
 	snapshotRequestTimeout = 5 * time.Second
@@ -136,11 +142,32 @@ type udpEnvelope struct {
 	Count int `json:"count"`
 }
 
-// Sent to a match's publisher and all of its watchers whenever the watcher set changes size
-// (join, leave, or timeout-prune) -- see the "watch"/"unwatch" cases and pruneStaleUDP below.
-func broadcastSpectatorCount(conn *net.UDPConn, matchId string) {
+// Package-level so both UDP-context code (handleUDPPacket, pruneStaleUDP) and TCP-context code
+// (handleSpectatorConn, handlePublisherConn in the TCP section below) can broadcast a count
+// change -- see broadcastSpectatorCount's own comment for why the TCP side needs this too.
+var udpConn *net.UDPConn
+
+// Sent to a match's publisher and all of its watchers whenever the watcher set changes size.
+// The count itself is the number of *TCP* live-feed connections currently registered for the
+// match (matchWatchersTCP, below), not UDP watch registrations -- a spectator's TCP connection
+// is registered the instant its snapshot handoff completes, before its own local ROM/driver load
+// even starts, and only ever goes away on a real disconnect. Using it as the source of truth
+// avoids the bug where a spectator stuck for a long time in that one synchronous, network-silent
+// local load (CPS3's decompression/decryption can run well past any keepalive interval) would
+// otherwise get pruned as "gone" just because its UDP heartbeat went quiet, broadcasting a false
+// departure to the match's real players even though nothing left. The UDP registrations (this
+// function's actual send targets, and still tracked separately) are unaffected by this and still
+// serve chat and the watch/unwatch presence protocol as before.
+func broadcastSpectatorCount(matchId string) {
+	if udpConn == nil {
+		return
+	}
+
+	tcpMu.Lock()
+	count := len(matchWatchersTCP[matchId])
+	tcpMu.Unlock()
+
 	udpMu.Lock()
-	count := len(subscribers[matchId])
 	var targets []udpRegistration
 	if pub, ok := publishers[matchId]; ok {
 		targets = append(targets, pub)
@@ -158,7 +185,7 @@ func broadcastSpectatorCount(conn *net.UDPConn, matchId string) {
 		return
 	}
 	for _, t := range targets {
-		_, _ = conn.WriteToUDP(out, t.addr)
+		_, _ = udpConn.WriteToUDP(out, t.addr)
 	}
 }
 
@@ -169,6 +196,7 @@ func runUDPRelay() {
 		log.Fatal("spectate-relay UDP listen error:", err)
 	}
 	defer conn.Close()
+	udpConn = conn
 
 	log.Println("spectate-relay UDP listening on", addr.String())
 
@@ -176,7 +204,7 @@ func runUDPRelay() {
 		ticker := time.NewTicker(pruneInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			pruneStaleUDP(conn)
+			pruneStaleUDP()
 		}
 	}()
 
@@ -238,7 +266,7 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		// (see SPECTATE_REGISTER_INTERVAL_MS in fbn_spectate.cpp) that keeps this from expiring.
 		if !alreadyWatching {
 			log.Printf("spectate-relay: UDP watcher %s registered for match %s from %s\n", msg.UID, msg.MatchID, remote.String())
-			broadcastSpectatorCount(conn, msg.MatchID)
+			broadcastSpectatorCount(msg.MatchID)
 		}
 
 	case "unwatch":
@@ -254,7 +282,7 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		udpMu.Unlock()
 
 		if wasWatching {
-			broadcastSpectatorCount(conn, msg.MatchID)
+			broadcastSpectatorCount(msg.MatchID)
 		}
 
 	case "chat":
@@ -300,7 +328,7 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 	}
 }
 
-func pruneStaleUDP(conn *net.UDPConn) {
+func pruneStaleUDP() {
 	now := time.Now()
 	var changedMatches []string
 
@@ -330,7 +358,7 @@ func pruneStaleUDP(conn *net.UDPConn) {
 
 	// Broadcast outside the lock -- these are network sends, not map access.
 	for _, matchId := range changedMatches {
-		broadcastSpectatorCount(conn, matchId)
+		broadcastSpectatorCount(matchId)
 	}
 }
 
@@ -700,11 +728,13 @@ func handleSpectatorConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 	matchWatchersTCP[matchId][sw] = true
 	tcpMu.Unlock()
 	log.Printf("spectate-relay: spectator connected for match %s, watching live feed over TCP\n", matchId)
+	broadcastSpectatorCount(matchId)
 
 	defer func() {
 		tcpMu.Lock()
 		delete(matchWatchersTCP[matchId], sw)
 		tcpMu.Unlock()
+		broadcastSpectatorCount(matchId)
 		conn.Close()
 	}()
 
