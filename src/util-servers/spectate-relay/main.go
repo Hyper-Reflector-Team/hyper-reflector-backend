@@ -107,17 +107,24 @@ var (
 	// distinct (matchId, rejecting address) pair so a genuinely misbehaving/NAT-drifted sender
 	// doesn't spam the log at frame rate, while still surfacing the very first occurrence.
 	loggedFrameRejections = make(map[string]bool)
+	// Debug aid: logs only the first successfully-relayed frame per match, so "frames are
+	// flowing at all" is visible in the log without spamming it at frame rate.
+	loggedFirstFrameRelayed = make(map[string]bool)
 )
 
 type udpEnvelope struct {
-	Type     string `json:"type"`
-	MatchID  string `json:"matchId"`
-	UID      string `json:"uid,omitempty"`
-	Frame    int64  `json:"frame,omitempty"`
+	Type    string `json:"type"`
+	MatchID string `json:"matchId"`
+	UID     string `json:"uid,omitempty"`
+	// Frame and Count deliberately have no omitempty: 0 is a meaningful value for both (the
+	// very first frame of a match; the last spectator leaving), and omitempty on a numeric
+	// field drops the key entirely when its value is the zero value, which a reader like
+	// fbn_spectate.cpp's JsonExtractLong can't tell apart from "no packet was even parseable".
+	Frame    int64  `json:"frame"`
 	Data     string `json:"data,omitempty"`
 	UserName string `json:"userName,omitempty"`
 	Text     string `json:"text,omitempty"`
-	Count    int    `json:"count,omitempty"`
+	Count    int    `json:"count"`
 }
 
 // Sent to a match's publisher and all of its watchers whenever the watcher set changes size
@@ -209,6 +216,7 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 				delete(loggedFrameRejections, key)
 			}
 		}
+		delete(loggedFirstFrameRelayed, msg.MatchID)
 		udpMu.Unlock()
 
 	case "watch":
@@ -279,6 +287,15 @@ func handleUDPPacket(conn *net.UDPConn, data []byte, remote *net.UDPAddr) {
 		if len(targets) == 0 {
 			return
 		}
+
+		udpMu.Lock()
+		alreadyLoggedFrame := loggedFirstFrameRelayed[msg.MatchID]
+		loggedFirstFrameRelayed[msg.MatchID] = true
+		udpMu.Unlock()
+		if !alreadyLoggedFrame {
+			log.Printf("spectate-relay: relaying frame %d for match %s to %d watcher(s)\n", msg.Frame, msg.MatchID, len(targets))
+		}
+
 		out, err := json.Marshal(msg)
 		if err != nil {
 			return
@@ -370,12 +387,15 @@ func pruneStaleUDP(conn *net.UDPConn) {
 // ---------------------------------------------------------------------------
 
 type tcpHeader struct {
-	Role        string `json:"role,omitempty"`
-	MatchID     string `json:"matchId,omitempty"`
-	Cmd         string `json:"cmd,omitempty"`
-	RequestID   string `json:"requestId,omitempty"`
-	Frame       int64  `json:"frame,omitempty"`
-	PayloadSize int    `json:"payloadSize,omitempty"`
+	Role      string `json:"role,omitempty"`
+	MatchID   string `json:"matchId,omitempty"`
+	Cmd       string `json:"cmd,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+	// No omitempty on Frame/PayloadSize: both can legitimately be 0 (the very first frame of a
+	// match; see the matching note on udpEnvelope.Frame above), and omitempty would silently
+	// drop the key in that case instead of sending an explicit 0.
+	Frame       int64  `json:"frame"`
+	PayloadSize int    `json:"payloadSize"`
 	Reason      string `json:"reason,omitempty"`
 }
 
