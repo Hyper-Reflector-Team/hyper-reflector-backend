@@ -471,6 +471,17 @@ func runTCPRelay() {
 			log.Println("spectate-relay TCP accept error:", err)
 			continue
 		}
+		// Both roles accepted here (publisher and spectator) hold a long-lived connection for
+		// the whole match, which a NAT/firewall between here and the client can silently reset
+		// after roughly a minute or two of what it perceives as an idle connection -- some
+		// middleboxes track liveness via keepalive probes rather than raw data throughput, so
+		// this can bite even a connection that's actively carrying our own frame-push traffic.
+		// TCP keepalive both refreshes that mapping and lets us detect a genuinely dead peer
+		// faster than waiting on a read to eventually fail on its own.
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetKeepAlive(true)
+			_ = tcpConn.SetKeepAlivePeriod(20 * time.Second)
+		}
 		go handleTCPConn(conn)
 	}
 }
