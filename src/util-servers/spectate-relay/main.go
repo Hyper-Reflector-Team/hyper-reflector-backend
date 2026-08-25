@@ -69,11 +69,15 @@ package main
 //     immediately followed by N raw bytes: the state blob (tagged "frame")
 //     followed by a backfill of confirmed-input entries for every frame up
 //     to "liveFrame" -- NOT base64'd, this is why TCP framing carries a raw
-//     payload instead of JSON-embedding it. The relay never inspects this
-//     payload, just forwards it verbatim; see fbn_spectate.cpp's
-//     SpectatePublishServiceIncoming/ApplySnapshotAndBackfill for why the
-//     backfill exists (the snapshot itself is deliberately stale by the
-//     time it's served, so liveFrame can be well past frame).
+//     payload instead of JSON-embedding it. Unlike everything else on this
+//     connection, the relay does NOT just forward this verbatim: it splices
+//     its own cache of already-broadcast frames (recentFramesByMatch, fed by
+//     the "frame" case below) onto the end, past whatever "liveFrame" the
+//     publisher computed, and registers the new watcher in the same locked
+//     section -- closing the gap a plain network round trip would otherwise
+//     leave between "what the publisher backfilled" and "what's live right
+//     now". See fbn_spectate.cpp's SpectatePublishServiceIncoming and
+//     ApplySnapshotAndBackfill for the client side of both layers.
 //
 //     Spectator, on connect, sends:
 //       {"role":"spectator","matchId":"..."}
@@ -88,6 +92,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -431,6 +436,39 @@ var (
 	loggedFirstFrameRelayed = make(map[string]bool)
 )
 
+// frameEntry is one already-broadcast confirmed-input frame, cached for the supplemental backfill
+// splice below.
+type frameEntry struct {
+	frame int64
+	data  []byte
+}
+
+// recentFrameCacheSize mirrors SPECTATE_RING_SIZE in fbn_spectate.cpp -- this only ever needs to
+// cover the gap between a publisher computing its own snapshot-response backfill and this relay
+// actually splicing + registering the new watcher a moment later (see the "snapshot-response" case
+// below), which is at most a couple of network round trips' worth of frames, nowhere near this cap.
+const recentFrameCacheSize = 256
+
+// matchId -> recently-broadcast frames, oldest first, protected by tcpMu. Populated by the "frame"
+// case in handlePublisherConn (the same place that fans them out live) so a late-registering
+// spectator can be caught up on exactly what it missed, using data this relay already has on hand
+// rather than trusting a separately-computed, inherently stale cutoff from the publisher.
+var recentFramesByMatch = make(map[string][]frameEntry)
+
+// Must be called with tcpMu already held. Returns, in order, every cached frame strictly newer
+// than afterFrame -- the gap between the publisher's own backfill (see fbn_spectate.cpp's
+// SpectatePublishServiceIncoming) and "right now", captured here rather than assumed, because the
+// publisher and this relay observe "now" at different points across a network round trip.
+func supplementalBackfillLocked(matchId string, afterFrame int64) []frameEntry {
+	var out []frameEntry
+	for _, entry := range recentFramesByMatch[matchId] {
+		if entry.frame > afterFrame {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 // maxSpectatorConnsPerIP caps concurrent spectator connections from a single source address --
 // abuse/resource-exhaustion mitigation (one greedy or malicious client opening many connections),
 // not protection against a real distributed attack across many IPs, which needs infra-level
@@ -556,6 +594,10 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 
 	tcpMu.Lock()
 	matchPublisherTCP[matchId] = pc
+	// Clear any leftover cache from a previous publisher session for this matchId -- its frame
+	// numbering has no relationship to this new session's, and stale entries here could get
+	// spliced into a fresh spectator's backfill as if they were current.
+	delete(recentFramesByMatch, matchId)
 	tcpMu.Unlock()
 
 	defer func() {
@@ -568,6 +610,7 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 		watchers := matchWatchersTCP[matchId]
 		delete(matchWatchersTCP, matchId)
 		delete(loggedFirstFrameRelayed, matchId)
+		delete(recentFramesByMatch, matchId)
 		tcpMu.Unlock()
 		for w := range watchers {
 			_ = w.send(tcpHeader{Cmd: "publisher-disconnected"}, nil)
@@ -602,23 +645,44 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 			if ok {
 				delete(pendingByRequest, header.RequestID)
 			}
-			tcpMu.Unlock()
-
 			if !ok {
+				tcpMu.Unlock()
 				// Late/duplicate response for a request that already timed out. Drop it.
 				continue
 			}
 
+			// Splice in anything this relay has already broadcast for this match past the
+			// publisher's own backfill (header.LiveFrame) -- the publisher computed that backfill
+			// at some earlier point relative to "now", a network round trip away, so it can't
+			// account for frames published since. Then register the new watcher, in the SAME
+			// critical section: this connection's messages are processed strictly sequentially (one
+			// goroutine, one message at a time), so no "frame" case for this match can run
+			// concurrently with this one -- whatever this splice captures plus whatever the "frame"
+			// case fans out after this point covers every frame with no gap and no overlap.
+			supplemental := supplementalBackfillLocked(matchId, header.LiveFrame)
+			finalLiveFrame := header.LiveFrame
+			for _, entry := range supplemental {
+				payload = append(payload, entry.data...)
+				finalLiveFrame = entry.frame
+			}
+			if matchWatchersTCP[matchId] == nil {
+				matchWatchersTCP[matchId] = make(map[*tcpWriter]bool)
+			}
+			matchWatchersTCP[matchId][pending.spec] = true
+			tcpMu.Unlock()
+
 			_ = pending.spec.send(tcpHeader{
 				Cmd:         "snapshot-response",
 				Frame:       header.Frame,
-				LiveFrame:   header.LiveFrame,
-				PayloadSize: header.PayloadSize,
+				LiveFrame:   finalLiveFrame,
+				PayloadSize: len(payload),
 			}, payload)
 			close(pending.done)
-			// pending.spec's connection is deliberately NOT closed here -- it stays open and
-			// registers as a live watcher right after this (see handleSpectatorConn), unlike the
-			// old one-shot-then-close design.
+			log.Printf("spectate-relay: spectator connected for match %s, watching live feed over TCP (backfilled to frame %d, %d frame(s) spliced from cache)\n",
+				matchId, finalLiveFrame, len(supplemental))
+			broadcastSpectatorCount(matchId)
+			// pending.spec's connection is deliberately NOT closed here -- it stays open as the
+			// live feed itself, already registered as a watcher above.
 
 		case "frame":
 			// The confirmed-input live feed, pushed unprompted by the publisher for every frame
@@ -633,6 +697,16 @@ func handlePublisherConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 			}
 			alreadyLogged := loggedFirstFrameRelayed[matchId]
 			loggedFirstFrameRelayed[matchId] = true
+
+			// Cache for a late-registering spectator's supplemental backfill splice (see the
+			// "snapshot-response" case above) -- decoded once here so that splice never has to.
+			if decoded, err := base64.StdEncoding.DecodeString(header.Data); err == nil {
+				cache := append(recentFramesByMatch[matchId], frameEntry{frame: header.Frame, data: decoded})
+				if len(cache) > recentFrameCacheSize {
+					cache = cache[len(cache)-recentFrameCacheSize:]
+				}
+				recentFramesByMatch[matchId] = cache
+			}
 			tcpMu.Unlock()
 
 			if !alreadyLogged {
@@ -718,7 +792,9 @@ func handleSpectatorConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 
 	select {
 	case <-pending.done:
-		// handlePublisherConn already sent the snapshot-response above.
+		// handlePublisherConn's "snapshot-response" case already sent the (backfill-spliced)
+		// snapshot response AND registered sw in matchWatchersTCP, atomically with respect to its
+		// own "frame" fan-out -- see that case for why doing both together, there, matters.
 	case <-time.After(snapshotRequestTimeout):
 		tcpMu.Lock()
 		delete(pendingByRequest, requestId)
@@ -728,19 +804,8 @@ func handleSpectatorConn(conn net.Conn, reader *bufio.Reader, matchId string) {
 		return
 	}
 
-	// Snapshot delivered -- register as a live watcher and keep this connection open for the
-	// match's duration instead of closing it (see the "frame" case in handlePublisherConn, which
-	// only starts fanning frames out to this connection from this point forward; registering any
-	// earlier would risk a frame push racing ahead of the snapshot-response on the wire).
-	tcpMu.Lock()
-	if matchWatchersTCP[matchId] == nil {
-		matchWatchersTCP[matchId] = make(map[*tcpWriter]bool)
-	}
-	matchWatchersTCP[matchId][sw] = true
-	tcpMu.Unlock()
-	log.Printf("spectate-relay: spectator connected for match %s, watching live feed over TCP\n", matchId)
-	broadcastSpectatorCount(matchId)
-
+	// Keep this connection open for the match's duration as the live feed itself, rather than
+	// closing it after the snapshot -- sw is already a registered watcher at this point.
 	defer func() {
 		tcpMu.Lock()
 		delete(matchWatchersTCP[matchId], sw)
