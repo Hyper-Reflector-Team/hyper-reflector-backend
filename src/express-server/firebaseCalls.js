@@ -9,6 +9,11 @@ const serverInfo = require('../../keys/server.ts')
 // firebase related commands
 const db = getFirestore()
 
+// UIDs allowed to upload matches against mock/unknown opponents (dev/testing only)
+const MOCK_UPLOAD_WHITELIST = new Set([
+    'LcPLpfKXB0ON0UoIP9esWe73UJu2', // DEV
+])
+
 const usersRef = db.collection('users')
 const logInUserRef = db.collection('logged-in')
 const winStreaksRef = db.collection('user-win-streaks')
@@ -36,6 +41,7 @@ const allowedFields = [
         'assignedFlairs',
         'rpsElo',
         'sidePreferences',
+        'createdAt',
     ]
     const sanitized = {}
     allowedFields.forEach((field) => {
@@ -253,12 +259,22 @@ async function createAccount({ name, email }, token) {
     if (!token) return
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (querySnapshot.empty) {
-        // create a new user
         await usersRef.doc(email).set({
             userEmail: email,
             userName: name,
+            userNameLower: name.toLowerCase(),
             userProfilePic: null,
             uid: token,
+            accountElo: 1200,
+            createdAt: Date.now(),
+        })
+        await db.collection('player-stats').doc(token).set({
+            totalWins: 0,
+            totalLosses: 0,
+            totalGames: 0,
+            accountElo: 1200,
+            winStreak: 0,
+            longestWinStreak: 0,
         })
     } else {
         return null
@@ -329,6 +345,7 @@ async function updateUserData(data, token) {
     if (updates.userName) {
         await userDocRef.update({
             knownAliases: FieldValue.arrayUnion(updates.userName),
+            userNameLower: updates.userName.toLowerCase(),
         })
     }
 
@@ -351,8 +368,9 @@ async function getUserAccountByAuth(token) {
     if (!token) return
     const querySnapshot = await usersRef.where('uid', '==', token).get()
     if (!querySnapshot.empty) {
-        console.log(querySnapshot.docs[0].data())
-        return querySnapshot.docs[0].data()
+        const doc = querySnapshot.docs[0]
+        const { userEmail, ...filteredData } = doc.data() // exclude email
+        return sanitizeUserRecord(filteredData)
     } else {
         return null
     }
@@ -387,9 +405,31 @@ async function getUserElo(uid) {
     }
 }
 
+function isMockOrUnknownOpponent(opponentUid) {
+    if (!opponentUid) return true
+    return opponentUid.startsWith('mock-') || opponentUid === 'unknown-opponent'
+}
+
+async function isRegisteredUser(targetUid) {
+    if (!targetUid) return false
+    const querySnapshot = await usersRef.where('uid', '==', targetUid).get()
+    return !querySnapshot.empty
+}
+
 async function uploadMatchData(matchData, uid) {
     if (!uid || !matchData.matchId) return
-    if (uid === !matchData.player1) return
+    if (!matchData.player1 || !matchData.player2) return
+
+    // Whitelisted admin/dev accounts can force-upload matches for any pair of
+    // players (including mock/unknown opponents) for testing purposes.
+    if (!MOCK_UPLOAD_WHITELIST.has(uid)) {
+        const isParticipant = uid === matchData.player1 || uid === matchData.player2
+        if (!isParticipant) return
+
+        const opponentUid = uid === matchData.player1 ? matchData.player2 : matchData.player1
+        if (isMockOrUnknownOpponent(opponentUid)) return
+        if (!(await isRegisteredUser(opponentUid))) return
+    }
 
     const sessionRef = db.collection('global-matches').doc(matchData.matchId)
     const parsed = dataConverter.parseMatchData(matchData.matchData.raw)
@@ -438,11 +478,19 @@ async function uploadMatchData(matchData, uid) {
 
     const sessionSnap = await sessionRef.get()
 
+    const luaP1Total = typeof parsed['p1-match-wins'] === 'number' ? parsed['p1-match-wins'] : null
+    const luaP2Total = typeof parsed['p2-match-wins'] === 'number' ? parsed['p2-match-wins'] : null
+    const hasLuaTotals = luaP1Total !== null && luaP2Total !== null
+
     if (!sessionSnap.exists) {
         console.log('snap shot did not exist')
-        // First match in session, create new document
-        const firstP1Wins = matchResult === '1' ? 1 : 0
-        const firstP2Wins = matchResult === '2' ? 1 : 0
+        if (hasLuaTotals) {
+            p1Wins = luaP1Total
+            p2Wins = luaP2Total
+        } else {
+            p1Wins = matchResult === '1' ? 1 : 0
+            p2Wins = matchResult === '2' ? 1 : 0
+        }
         const session = {
             sessionId: matchData.matchId,
             player1: matchData.player1,
@@ -450,27 +498,26 @@ async function uploadMatchData(matchData, uid) {
             player1Name: await getUserName(matchData.player1),
             player2Name: await getUserName(matchData.player2),
             matches: [matchEntry],
-            player1Wins: firstP1Wins,
-            player2Wins: firstP2Wins,
+            player1Wins: p1Wins,
+            player2Wins: p2Wins,
             timestamp: Date.now(),
         }
 
         await sessionRef.set(session)
-        p1Wins = firstP1Wins
-        p2Wins = firstP2Wins
     } else {
         console.log('snap shot did exist')
-        // Get current matches first (avoid fetching *after* the update)
-        const existingSession = sessionSnap.data()
-
-        const allMatches = [...(existingSession.matches || []), matchEntry]
-
-        for (const match of allMatches) {
-            if (match.result === '1') p1Wins++
-            if (match.result === '2') p2Wins++
+        if (hasLuaTotals) {
+            p1Wins = luaP1Total
+            p2Wins = luaP2Total
+        } else {
+            const existingSession = sessionSnap.data()
+            const allMatches = [...(existingSession.matches || []), matchEntry]
+            for (const match of allMatches) {
+                if (match.result === '1') p1Wins++
+                if (match.result === '2') p2Wins++
+            }
         }
 
-        // Single update
         await sessionRef.update({
             matches: FieldValue.arrayUnion(matchEntry),
             player1Wins: p1Wins,
@@ -522,10 +569,14 @@ async function uploadMatchData(matchData, uid) {
             {
                 player1Name: await getUserName(matchData.player1),
                 player2Name: await getUserName(matchData.player2),
+                player1Uid: matchData.player1 || null,
+                player2Uid: matchData.player2 || null,
                 sessionId: matchData.matchId,
                 timestamp: Date.now(),
                 p1Wins,
                 p2Wins,
+                player1Chars: FieldValue.arrayUnion({ char: p1Char || null, super: parsed['player1-super'] ?? null }),
+                player2Chars: FieldValue.arrayUnion({ char: p2Char || null, super: parsed['player2-super'] ?? null }),
             },
             { merge: true }
         )
@@ -791,15 +842,15 @@ async function isAdminUser(uid) {
 }
 
 async function searchUsers(query = '', limit = 25, cursorName = null) {
-    const normalizedQuery = (query || '').trim()
+    const normalizedQuery = (query || '').trim().toLowerCase()
     const pageSize = Math.min(Number(limit) || 25, 50)
-    let ref = usersRef.orderBy('userName')
+    let ref = usersRef.orderBy('userNameLower')
     if (normalizedQuery) {
         const end = `${normalizedQuery}\uf8ff`
-        ref = ref.where('userName', '>=', normalizedQuery).where('userName', '<=', end)
+        ref = ref.where('userNameLower', '>=', normalizedQuery).where('userNameLower', '<=', end)
     }
     if (cursorName) {
-        ref = ref.startAfter(cursorName)
+        ref = ref.startAfter(cursorName.toLowerCase())
     }
     const snapshot = await ref.limit(pageSize).get()
     if (snapshot.empty) {
@@ -809,80 +860,69 @@ async function searchUsers(query = '', limit = 25, cursorName = null) {
     const lastDoc = snapshot.docs[snapshot.docs.length - 1]
     return {
         users,
-        nextCursor: lastDoc ? lastDoc.get('userName') : null,
+        nextCursor: lastDoc ? lastDoc.get('userNameLower') : null,
     }
 }
 
 async function getLeaderboard(sortBy = 'elo', limit = 25, cursorValue = null) {
     const pageSize = Math.min(Number(limit) || 25, 50)
-    if (sortBy === 'wins') {
-        let statsRef = db.collection('player-stats').orderBy('totalWins', 'desc')
-        if (cursorValue !== undefined && cursorValue !== null) {
-            statsRef = statsRef.startAfter(Number(cursorValue))
-        }
-        const snapshot = await statsRef.limit(pageSize).get()
-        if (snapshot.empty) {
-            return { entries: [], nextCursor: null }
-        }
-        const entries = []
-        for (const doc of snapshot.docs) {
-            const stats = doc.data() || {}
-            const user = await getUserData(doc.id)
-            if (user) {
-                entries.push({
-                    user,
-                    stats: {
-                        totalWins: stats.totalWins || 0,
-                        totalLosses: stats.totalLosses || 0,
-                        totalGames: stats.totalGames || 0,
-                    },
-                })
-            }
-        }
-        const lastDoc = snapshot.docs[snapshot.docs.length - 1]
-        return {
-            entries,
-            nextCursor: lastDoc ? lastDoc.get('totalWins') : null,
-        }
-    }
+    const offset = cursorValue !== null && cursorValue !== undefined ? Number(cursorValue) : 0
 
-    let userRef = usersRef.orderBy('accountElo', 'desc')
-    if (cursorValue !== undefined && cursorValue !== null) {
-        userRef = userRef.startAfter(Number(cursorValue))
-    }
-    const snapshot = await userRef.limit(pageSize).get()
-    if (snapshot.empty) {
-        return { entries: [], nextCursor: null }
-    }
-    const entries = snapshot.docs
-        .map((doc) => {
+    if (sortBy === 'wins') {
+        const [statsSnapshot, usersSnapshot] = await Promise.all([
+            db.collection('player-stats').get(),
+            usersRef.get(),
+        ])
+
+        const statsMap = new Map()
+        for (const doc of statsSnapshot.docs) {
+            statsMap.set(doc.id, doc.data())
+        }
+
+        const allEntries = []
+        for (const doc of usersSnapshot.docs) {
             const user = sanitizeUserRecord(doc.data())
-            if (!user) return null
-            return {
+            if (!user) continue
+            const stats = statsMap.get(user.uid) || {}
+            allEntries.push({
                 user,
                 stats: {
-                    accountElo: doc.get('accountElo') || 0,
+                    totalWins: stats.totalWins || 0,
+                    totalLosses: stats.totalLosses || 0,
+                    totalGames: stats.totalGames || 0,
                 },
-            }
+                _sort: stats.totalWins || 0,
+            })
+        }
+
+        allEntries.sort((a, b) => b._sort - a._sort)
+        const page = allEntries.slice(offset, offset + pageSize)
+        return {
+            entries: page.map(({ user, stats }) => ({ user, stats })),
+            nextCursor: offset + pageSize < allEntries.length ? offset + pageSize : null,
+        }
+    }
+
+    const usersSnapshot = await usersRef.get()
+    const allEntries = []
+    for (const doc of usersSnapshot.docs) {
+        const user = sanitizeUserRecord(doc.data())
+        if (!user) continue
+        allEntries.push({
+            user,
+            stats: { accountElo: doc.get('accountElo') ?? 1200 },
+            _sort: doc.get('accountElo') ?? 1200,
         })
-        .filter(Boolean)
-    const lastDoc = snapshot.docs[snapshot.docs.length - 1]
+    }
+
+    allEntries.sort((a, b) => b._sort - a._sort)
+    const page = allEntries.slice(offset, offset + pageSize)
     return {
-        entries,
-        nextCursor: lastDoc ? lastDoc.get('accountElo') : null,
+        entries: page.map(({ user, stats }) => ({ user, stats })),
+        nextCursor: offset + pageSize < allEntries.length ? offset + pageSize : null,
     }
 }
 
-async function getUserName(uid) {
-    if (!uid) return
-    const querySnapshot = await usersRef.where('uid', '==', uid).get()
-    if (!querySnapshot.empty) {
-        console.log('trying to get docs', querySnapshot.docs)
-        return querySnapshot.docs[0].data().userName
-    } else {
-        return null
-    }
-}
 
 // set elo
 async function setUserElo(uid, newElo) {
@@ -928,6 +968,7 @@ async function getUserMatches(uid, limit = 10, lastMatchId = null, firstMatchId 
 
     const querySnapshot = await query.get()
     const matches = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+
     return {
         matches,
         lastVisible: querySnapshot.docs[querySnapshot.docs.length - 1] || null,

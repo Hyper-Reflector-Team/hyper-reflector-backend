@@ -40,6 +40,7 @@ export interface LobbyMeta {
     pass?: string;
     isPrivate?: boolean;
     ownerUid?: string;
+    gameName?: string;
 }
 
 export type UpdateSocketStatePayload = {
@@ -49,6 +50,7 @@ export type UpdateSocketStatePayload = {
         key: string;
         value: any;
     };
+    rankQueueGameName?: string;
 };
 
 export type EstimatePingUsersPayload = {
@@ -58,9 +60,10 @@ export type EstimatePingUsersPayload = {
 };
 
 export type SignalMessage =
-    | { type: 'join'; user: SocketUser; lobbyId?: string }
+    | { type: 'join'; user: SocketUser; lobbyId?: string; pass?: string }
     | { type: 'updateSocketState'; data: UpdateSocketStatePayload }
-    | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean }
+    | { type: 'updateProfile'; user: SocketUser }
+    | { type: 'createLobby'; lobbyId: string; pass?: string; user: SocketUser; isPrivate?: boolean; gameName?: string }
     | { type: 'changeLobby'; newLobbyId: string; pass?: string; user: SocketUser }
     | {
           type: 'request-match';
@@ -74,7 +77,7 @@ export type SignalMessage =
     | { type: 'userDisconnect'; userUID?: string }
     | { type: 'sendMessage'; sender: SocketUser; message: string; messageId?: string }
     | { type: 'matchEnd'; userUID: string }
-    | { type: 'webrtc-ping-offer'; to: string; from: string; offer: unknown }
+    | { type: 'webrtc-ping-offer'; to: string; from: string; offer: unknown; lobbyId?: string }
     | { type: 'webrtc-ping-answer'; to: string; from: string; answer: unknown }
     | { type: 'webrtc-ping-decline'; to: string; from: string }
     | { type: 'webrtc-ping-candidate'; to: string; from: string; candidate: unknown }
@@ -142,7 +145,26 @@ export type SignalMessage =
           matchId: string;
           opponentId?: string;
           lobbyId?: string;
-      };
+      }
+    | { type: 'subscribeLobby'; lobbyId: string; pass?: string; user: SocketUser }
+    | { type: 'unsubscribeLobby'; lobbyId: string }
+    | { type: 'updateLobbyGame'; lobbyId: string; gameName: string }
+    | { type: 'rank-queue-accept'; matchId: string; uid: string }
+    | { type: 'rank-queue-decline'; matchId: string; uid: string }
+    | { type: 'tournament-subscribe'; tournamentId: string; uid: string }
+    | { type: 'tournament-unsubscribe'; tournamentId: string; uid: string }
+    | { type: 'tournament-changed'; tournamentId: string; uid: string }
+    | { type: 'spectate-request'; matchId: string; uid: string };
+
+export type RankQueueEntry = {
+    uid: string
+    elo: number
+    countryCode: string
+    lastKnownPings: Array<{ id: string; ping: number | string }>
+    lobbyId: string
+    queuedAt: number
+    gameName: string
+}
 
 export type MessageHandler = (ctx: MessageContext, message: SignalMessage) => Promise<void> | void;
 

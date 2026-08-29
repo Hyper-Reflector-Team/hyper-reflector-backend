@@ -240,11 +240,17 @@ func send(conn *net.UDPConn, msg []byte, peer Peer) {
 		IP:   net.ParseIP(peer.Address),
 		Port: peer.Port,
 	}
-	_, err := conn.WriteToUDP(msg, &addr)
-	if err != nil {
-		log.Printf("Error sending to %s: %v\n", peer.UID, err)
-	} else {
-		log.Printf("Sent peer info to %s\n", peer.UID)
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := conn.WriteToUDP(msg, &addr)
+		if err == nil {
+			log.Printf("Sent peer info to %s\n", peer.UID)
+			return
+		}
+		log.Printf("Error sending to %s (attempt %d/%d): %v\n", peer.UID, attempt, maxAttempts, err)
+		if attempt < maxAttempts {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 }
 

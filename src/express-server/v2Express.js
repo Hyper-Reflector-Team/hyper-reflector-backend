@@ -14,6 +14,7 @@ initializeApp({
 })
 
 const api = require('./firebaseCalls')
+const { registerTournamentRoutes } = require('./tournamentRoutes')
 
 app.use(express.json()) // for parsing application/json
 const apiLimiter = rateLimit({
@@ -139,19 +140,6 @@ app.post('/update-user-ping', async (req, res) => {
     }
 })
 
-app.post('/update-user-streak', async (req, res) => {
-    const authHeader = req.headers['authorization']
-    const token = authHeader && authHeader.split(' ')[1]
-
-    if (token !== serverInfo.SERVER_SECRET) {
-        return res.status(403).send('Forbidden')
-    }
-
-    await api.updateUserData(req.body.userData, req.body.uid)
-
-    res.status(200).send('Updated')
-})
-
 app.post('/mini-game/rps-result', async (req, res) => {
     const authHeader = req.headers['authorization']
     const token = authHeader && authHeader.split(' ')[1]
@@ -211,7 +199,8 @@ app.post('/get-user-server', async (req, res) => {
     const token = authHeader && authHeader.split(' ')[1]
 
     if (token !== serverInfo.SERVER_SECRET) {
-        return console.log('no access')
+        console.log('no access')
+        return res.status(403).send('Forbidden')
     }
     const data = await api.getUserData(req.body.userUID)
 
@@ -497,6 +486,8 @@ app.post('/admin/create-conditional-flair', async (req, res) => {
         res.status(500).json({ error: 'Server error' })
     }
 })
+
+registerTournamentRoutes(app)
 
 // init listen
 app.listen(port, () => {
